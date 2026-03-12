@@ -6,7 +6,7 @@
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -15,10 +15,11 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from scripts.processed.fetch_data import fetch_stock_price, fetch_trade_calendar
-from scripts.processed.clean_data import clean_stock_data
+from scripts.processed.fetch_data import fetch_trade_calendar
 from scripts.features.calc_features import build_all_features
 from scripts.strategy.livermore import LivermoreStrategy, Portfolio, Position
+from scripts.utils.asset_loader import build_asset_metadata, fetch_asset_history
+from scripts.utils.market_scanner import get_market_candidates
 
 import yaml
 
@@ -56,31 +57,93 @@ def resolve_symbol_pool(extra_symbols: list[str] | None = None) -> list[str]:
     capital = cfg.get("capital", {})
     holdings = capital.get("holdings") or []
     watchlist = capital.get("watchlist") or []
+    current_positions = capital.get("current_positions") or []
+    position_symbols = [item.get("symbol") for item in current_positions if item.get("symbol")]
     extra    = extra_symbols or []
 
     # 按持仓 → 自选 → 额外的顺序合并，dict.fromkeys 去重同时保持顺序
-    merged = list(dict.fromkeys(holdings + watchlist + extra))
+    merged = list(dict.fromkeys(holdings + position_symbols + watchlist + extra))
     logger.info(
-        "标的池：%d 条（持仓 %d / 自选 %d / 额外 %d）",
-        len(merged), len(holdings), len(watchlist), len(extra),
+        "标的池：%d 条（持仓列表 %d / 持仓明细 %d / 自选 %d / 额外 %d）",
+        len(merged), len(holdings), len(position_symbols), len(watchlist), len(extra),
     )
     return merged
+
+
+def load_portfolio_from_config() -> Portfolio:
+    """
+    从 strategy_config.yaml 加载当前真实组合状态。
+
+    配置来源：
+        capital.available_cash
+        capital.current_positions
+
+    返回：
+        Portfolio 对象，可直接传入 get_latest_signals()
+    """
+    cfg = _load_strategy_config()
+    capital_cfg = cfg.get("capital", {})
+    available_cash = capital_cfg.get("available_cash")
+    if available_cash is None:
+        available_cash = float(capital_cfg.get("stock_available_cash", 0.0) or 0.0) + float(
+            capital_cfg.get("fund_available_cash", 0.0) or 0.0
+        )
+    else:
+        available_cash = float(available_cash or 0.0)
+    positions_cfg = capital_cfg.get("current_positions") or []
+
+    portfolio = Portfolio(cash=available_cash)
+    for item in positions_cfg:
+        symbol = str(item.get("symbol", "")).strip()
+        if not symbol:
+            continue
+
+        cost_price = float(item.get("cost_price", 0.0) or 0.0)
+        shares = float(item.get("shares", 0) or 0)
+        peak_price = float(item.get("peak_price", cost_price) or cost_price)
+        add_unlocked = bool(item.get("add_unlocked", False))
+
+        if cost_price <= 0 or shares <= 0:
+            logger.warning("持仓 %s 配置无效，已跳过（cost_price=%s, shares=%s）", symbol, cost_price, shares)
+            continue
+
+        portfolio.positions[symbol] = Position(
+            symbol=symbol,
+            cost_price=cost_price,
+            shares=shares,
+            peak_price=peak_price,
+            add_unlocked=add_unlocked,
+        )
+
+    logger.info("已从配置加载组合：现金 %.2f 元，持仓 %d 只", portfolio.cash, len(portfolio.positions))
+    return portfolio
 
 
 def prepare_features(
     symbols: list[str],
     start_date: str,
     end_date: str,
+    extra_meta: dict[str, dict] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """
     批量拉取、清洗并计算因子，返回 {symbol: features_df} 字典。
+
+    参数：
+        extra_meta: 调用方传入的额外资产元信息（如市场扫描的 ETF/股票），
+                    会覆盖 build_asset_metadata() 中同名 symbol 的类型信息。
     """
     trade_dates = fetch_trade_calendar(start_date, end_date)
+    asset_meta = build_asset_metadata(extra_meta=extra_meta)
     result = {}
     for sym in symbols:
         logger.info("处理标的：%s", sym)
-        raw = fetch_stock_price(sym, start_date, end_date)
-        cleaned = clean_stock_data(raw, trade_dates=trade_dates)
+        cleaned = fetch_asset_history(
+            symbol=sym,
+            start_date=start_date,
+            end_date=end_date,
+            trade_dates=trade_dates,
+            asset_meta=asset_meta,
+        )
         if cleaned is None:
             logger.warning("标的 %s 数据不足，跳过", sym)
             continue
@@ -93,6 +156,7 @@ def get_latest_signals(
     start_date: str,
     symbols: list[str] | None = None,
     signal_date: str | None = None,
+    market_scan: bool = False,
 ) -> list[dict]:
     """
     获取指定日期（默认当日）的交易信号建议。
@@ -102,6 +166,8 @@ def get_latest_signals(
         portfolio: 当前持仓与资金状态
         start_date: 历史数据起始日期（用于因子计算，建议至少 60 个交易日前）
         signal_date: 信号日期，格式 "YYYY-MM-DD"，默认取今日
+        market_scan: 是否开启市场扫描（从活跃 ETF 及沪深 300 中寻找潜在买入机会），
+                     开启后会额外拉取数十只标的的历史数据，耗时较长
 
     返回：
         信号列表（参见 LivermoreStrategy.generate_signals 返回格式）
@@ -115,7 +181,17 @@ def get_latest_signals(
         logger.warning("标的池为空，请在 strategy_config.yaml 中配置 holdings 或 watchlist")
         return []
 
-    features_map = prepare_features(symbols, start_date, signal_date)
+    # 市场扫描：将活跃 ETF 与沪深 300 个股并入标的池，策略依靠 Z 阈值自动过滤
+    scan_meta: dict[str, dict] | None = None
+    if market_scan:
+        logger.info("开启市场扫描，正在拉取候选标的列表...")
+        existing = set(symbols)
+        scan_meta = get_market_candidates(exclude_symbols=existing)
+        scan_symbols = list(scan_meta.keys())
+        symbols = list(dict.fromkeys(symbols + scan_symbols))
+        logger.info("市场扫描新增 %d 只候选标的，标的池合计 %d 只", len(scan_symbols), len(symbols))
+
+    features_map = prepare_features(symbols, start_date, signal_date, extra_meta=scan_meta)
 
     # 提取信号日当天的最新价格与信心因子
     prices: dict[str, float] = {}
@@ -158,13 +234,23 @@ def _print_signals(signals: list[dict], signal_date: str) -> None:
 
 
 if __name__ == "__main__":
-    # 示例：扫描几只股票，以空组合（10万资金）为基础生成当日信号
-    demo_symbols = ["000001", "600519", "300750"]
-    demo_portfolio = Portfolio(cash=100_000.0)
+    import argparse
 
+    parser = argparse.ArgumentParser(description="生成当日 Livermore 策略交易信号")
+    parser.add_argument(
+        "--market-scan",
+        action="store_true",
+        default=False,
+        help="开启市场扫描，从活跃 ETF 和沪深 300 中寻找潜在买入机会（耗时较长）",
+    )
+    args = parser.parse_args()
+
+    signal_date = date.today().strftime("%Y-%m-%d")
+    start_date = (date.today() - timedelta(days=180)).strftime("%Y-%m-%d")
+    runtime_portfolio = load_portfolio_from_config()
     get_latest_signals(
-        symbols=demo_symbols,
-        portfolio=demo_portfolio,
-        start_date="2023-01-01",
-        signal_date="2023-12-29",
+        portfolio=runtime_portfolio,
+        start_date=start_date,
+        signal_date=signal_date,
+        market_scan=args.market_scan,
     )

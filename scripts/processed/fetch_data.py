@@ -130,6 +130,74 @@ def fetch_stock_price(
     return df
 
 
+def fetch_etf_price(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    adjust: str = "",
+    use_cache: bool = True,
+) -> pd.DataFrame:
+    """
+    获取场内 ETF/LOF 日线行情（开高低收量）。
+
+    参数：
+        symbol: ETF 或 LOF 代码，如 "512760"
+        start_date: 开始日期，格式 "YYYY-MM-DD"
+        end_date: 结束日期，格式 "YYYY-MM-DD"
+        adjust: 复权方式，默认不复权
+        use_cache: 是否优先读取本地缓存
+    """
+    if not symbol or not start_date or not end_date:
+        raise ValueError("symbol、start_date、end_date 均不能为空")
+
+    cache_name = f"etf_{symbol}_{adjust}_{start_date}_{end_date}"
+    config = _load_config()
+
+    if use_cache and config["storage"]["cache_enabled"]:
+        cached = _load_cache(cache_name)
+        if cached is not None:
+            return cached
+
+    retry_times = config["data_source"]["retry_times"]
+    retry_interval = config["data_source"]["retry_interval"]
+    start_fmt = start_date.replace("-", "")
+    end_fmt = end_date.replace("-", "")
+
+    df = None
+    for attempt in range(1, retry_times + 1):
+        try:
+            df = ak.fund_etf_hist_em(
+                symbol=symbol,
+                period="daily",
+                start_date=start_fmt,
+                end_date=end_fmt,
+                adjust=adjust,
+            )
+            break
+        except Exception as e:
+            logger.warning("第 %d 次请求失败（%s）：%s", attempt, symbol, e)
+            if attempt < retry_times:
+                time.sleep(retry_interval)
+
+    if df is None or df.empty:
+        logger.error("无法获取 ETF 数据：%s", symbol)
+        return pd.DataFrame()
+
+    df = df.rename(columns={
+        "日期": "date", "开盘": "open", "最高": "high",
+        "最低": "low", "收盘": "close", "成交量": "volume",
+        "成交额": "turnover", "振幅": "amplitude",
+        "涨跌幅": "pct_change", "涨跌额": "price_change", "换手率": "turnover_rate",
+    })
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date").sort_index()
+
+    if use_cache and config["storage"]["cache_enabled"]:
+        _save_cache(df, cache_name)
+
+    return df
+
+
 def fetch_fund_nav(
     fund_code: str,
     start_date: str,
@@ -165,7 +233,7 @@ def fetch_fund_nav(
     df = None
     for attempt in range(1, retry_times + 1):
         try:
-            df = ak.fund_open_fund_info_em(fund=fund_code, indicator="单位净值走势")
+            df = ak.fund_open_fund_info_em(symbol=fund_code, indicator="单位净值走势")
             break
         except Exception as e:
             logger.warning("第 %d 次请求失败（%s）：%s", attempt, fund_code, e)

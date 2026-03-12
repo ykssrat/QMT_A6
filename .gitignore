@@ -1,0 +1,36 @@
+# 原始数据缓存（无需版本控制，体积大且可重新拉取）
+datas/raw/
+datas/logs/
+
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 编辑器与 IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# 测试覆盖率报告
+.coverage
+htmlcov/
+.pytest_cache/
+
+# 打包与发布
+dist/
+build/
+*.egg-info/
+
+# 操作系统杂项
+.DS_Store
+Thumbs.db
+
+# 本地敏感配置（如含账户信息）
+configs/local_*.yaml

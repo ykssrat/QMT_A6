@@ -34,9 +34,9 @@ def _load_config() -> dict:
 class Position:
     """单只标的持仓信息。"""
     symbol: str
-    cost_price: float        # 持仓均价（元/股）
-    shares: int              # 持仓数量（股）
-    peak_price: float        # 持仓期间最高价（用于回调判断）
+    cost_price: float          # 持仓均价（元/股或元/份）
+    shares: float              # 持仓数量（股票用股，基金用份额）
+    peak_price: float          # 持仓期间最高价（用于回调判断）
     add_unlocked: bool = False  # 是否已解锁加仓权限
 
     @property
@@ -129,8 +129,10 @@ class LivermoreStrategy:
                 amount   - 建议出入金额（元）
         """
         signals: list[dict] = []
+        planned_sell_symbols: set[str] = set()
+        position_state: dict[str, tuple[Position, float, float, float]] = {}
 
-        # 1. 更新各持仓峰值，检查止损与加仓
+        # 1. 先统一更新峰值，并预先标记止损持仓，避免同一标的被 Y 因子与止损重复卖出
         for sym, pos in list(portfolio.positions.items()):
             price = prices.get(sym)
             if price is None:
@@ -139,8 +141,8 @@ class LivermoreStrategy:
             pos.update_peak(price)
             profit = pos.profit_rate(price)
             drawdown = pos.drawdown_from_peak(price)
+            position_state[sym] = (pos, price, profit, drawdown)
 
-            # ── 止损 ──
             if profit <= -self.c:
                 signals.append({
                     "symbol": sym,
@@ -148,6 +150,11 @@ class LivermoreStrategy:
                     "reason": f"止损：亏损率 {profit:.2%} >= {self.c:.2%}",
                     "amount": pos.market_value,
                 })
+                planned_sell_symbols.add(sym)
+
+        # 2. 再处理剩余持仓的解锁与加仓逻辑
+        for sym, (pos, _price, profit, drawdown) in position_state.items():
+            if sym in planned_sell_symbols:
                 continue
 
             # ── 解锁加仓 ──
@@ -161,9 +168,13 @@ class LivermoreStrategy:
                 if add_amount > portfolio.cash:
                     # 现金不足，触发 Y 因子优化
                     y_signals = self._y_factor_sell(
-                        portfolio, prices, required_amount=add_amount - portfolio.cash
+                        portfolio,
+                        prices,
+                        required_amount=add_amount - portfolio.cash,
+                        excluded_symbols=planned_sell_symbols | {sym},
                     )
                     signals.extend(y_signals)
+                    planned_sell_symbols.update(sig["symbol"] for sig in y_signals)
                 signals.append({
                     "symbol": sym,
                     "action": "add",
@@ -185,9 +196,13 @@ class LivermoreStrategy:
             build_amount = portfolio.total_assets * self.m
             if build_amount > portfolio.cash:
                 y_signals = self._y_factor_sell(
-                    portfolio, prices, required_amount=build_amount - portfolio.cash
+                    portfolio,
+                    prices,
+                    required_amount=build_amount - portfolio.cash,
+                    excluded_symbols=planned_sell_symbols,
                 )
                 signals.extend(y_signals)
+                planned_sell_symbols.update(sig["symbol"] for sig in y_signals)
 
             signals.append({
                 "symbol": sym,
@@ -205,16 +220,22 @@ class LivermoreStrategy:
         portfolio: Portfolio,
         prices: dict[str, float],
         required_amount: float,
+        excluded_symbols: set[str] | None = None,
     ) -> list[dict]:
         """
         Y 因子优化：按盈利率从低到高排序，依次卖出持仓以补足所需资金。
 
         参数：
             required_amount: 需要补足的资金量（元）
+            excluded_symbols: 已经计划卖出的标的集合，避免重复生成卖出信号
 
         返回：
             卖出信号列表
         """
+        if required_amount <= 0:
+            return []
+
+        excluded_symbols = excluded_symbols or set()
         profit_rates = portfolio.position_profit_rates(prices)
         # 按盈利率升序排列（最差的先卖）
         sorted_positions = sorted(profit_rates.items(), key=lambda x: x[1])
@@ -222,6 +243,8 @@ class LivermoreStrategy:
         signals = []
         accumulated = 0.0
         for sym, rate in sorted_positions:
+            if sym in excluded_symbols:
+                continue
             if accumulated >= required_amount:
                 break
             pos = portfolio.positions[sym]
@@ -234,5 +257,6 @@ class LivermoreStrategy:
                 "amount": sell_value,
             })
             accumulated += sell_value
+            excluded_symbols.add(sym)
 
         return signals

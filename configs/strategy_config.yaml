@@ -3,32 +3,146 @@
 # 通用资金管理参数
 capital:
   total: 100000              # 初始总资金（元）
-  max_position_count: 10     # 最大同时持仓股票数量
-  available_cash: 100000     # 当前可用现金（元），运行信号生成时直接读取
+  max_position_count: 20     # 最大同时持仓数量
+  available_cash: 4433.94    # 当前总可用现金（元）= 股票账户 + 场外基金账户
+  stock_available_cash: 265.69
+  fund_available_cash: 4168.25
 
   # 用户当前持仓标的代码列表（无论 Z 是否达标，每日均参与计算）
   holdings:
-    # - "000001"             # 示例：平安银行
-    # - "100032"             # 示例：某场外基金代码
+    - "016874"
+    - "011370"
+    - "010770"
+    - "018147"
+    - "025857"
+    - "020105"
+    - "025500"
+    - "018957"
+    - "011036"
+    - "600108"
+    - "159309"
+    - "512760"
+    - "518880"
+    - "512660"
+    - "601179"
 
   # 用户自选关注列表（无论 Z 是否达标，每日均参与计算）
   watchlist:
-    # - "600519"             # 示例：贵州茅台
-    # - "300750"             # 示例：宁德时代
-    # - "510300"             # 示例：沪深300 ETF
+    - "603156"
 
-  # 当前实际持仓明细：用于直接生成交易建议
+  # 自选标的元信息（名称与资产类型，供系统正确识别处理方式）
+  watchlist_metadata:
+    "603156":
+      name: "养元饮品"
+      asset_type: "stock"
+
+  # 当前实际持仓明细：直接用于生成交易建议
   current_positions:
-    # - symbol: "600519"
-    #   cost_price: 1680.0
-    #   shares: 100
-    #   peak_price: 1755.0
-    #   add_unlocked: false
-    # - symbol: "510300"
-    #   cost_price: 3.92
-    #   shares: 5000
-    #   peak_price: 4.08
-    #   add_unlocked: true
+    - symbol: "016874"
+      name: "广发远见智选混合C"
+      asset_type: "fund_open"
+      cost_price: 1.382317
+      shares: 9858.32
+      peak_price: 1.49
+      add_unlocked: false
+    - symbol: "011370"
+      name: "华商均衡成长混合C"
+      asset_type: "fund_open"
+      cost_price: 2.193244
+      shares: 1232.86
+      peak_price: 2.3505
+      add_unlocked: false
+    - symbol: "010770"
+      name: "天弘中证农业主题ETF联接C"
+      asset_type: "fund_open"
+      cost_price: 0.8954
+      shares: 8152.78
+      peak_price: 0.9168
+      add_unlocked: false
+    - symbol: "018147"
+      name: "建信新兴市场优选混合(QDII)C"
+      asset_type: "fund_open"
+      cost_price: 1.6598
+      shares: 209.72
+      peak_price: 1.692
+      add_unlocked: false
+    - symbol: "025857"
+      name: "华夏中证电网设备主题ETF联接C"
+      asset_type: "fund_open"
+      cost_price: 1.412875
+      shares: 5095.90
+      peak_price: 1.4222
+      add_unlocked: false
+    - symbol: "020105"
+      name: "易方达石油化工ETF联接C"
+      asset_type: "fund_open"
+      cost_price: 1.700673
+      shares: 4939.42
+      peak_price: 1.692
+      add_unlocked: false
+    - symbol: "025500"
+      name: "东方阿尔法科技智选混合C"
+      asset_type: "fund_open"
+      cost_price: 1.241947
+      shares: 5877.62
+      peak_price: 1.2299
+      add_unlocked: false
+    - symbol: "018957"
+      name: "中航机遇领航混合C"
+      asset_type: "fund_open"
+      cost_price: 3.7349
+      shares: 1927.81
+      peak_price: 3.6236
+      add_unlocked: false
+    - symbol: "011036"
+      name: "嘉实中证稀土产业ETF联接C"
+      asset_type: "fund_open"
+      cost_price: 1.539132
+      shares: 8092.52
+      peak_price: 1.4474
+      add_unlocked: false
+    - symbol: "600108"
+      name: "亚盛集团"
+      asset_type: "stock"
+      cost_price: 5.995
+      shares: 200
+      peak_price: 6.96
+      add_unlocked: true
+    - symbol: "159309"
+      name: "油气资源ETF"
+      asset_type: "etf"
+      cost_price: 1.925
+      shares: 1700
+      peak_price: 1.626
+      add_unlocked: false
+    - symbol: "512760"
+      name: "芯片ETF"
+      asset_type: "etf"
+      cost_price: 1.845
+      shares: 100
+      peak_price: 1.706
+      add_unlocked: false
+    - symbol: "518880"
+      name: "黄金ETF"
+      asset_type: "etf"
+      cost_price: 11.331
+      shares: 200
+      peak_price: 10.938
+      add_unlocked: false
+    - symbol: "512660"
+      name: "军工ETF"
+      asset_type: "etf"
+      cost_price: 1.572
+      shares: 700
+      peak_price: 1.457
+      add_unlocked: false
+    - symbol: "601179"
+      name: "中国西电"
+      asset_type: "stock"
+      cost_price: 19.810
+      shares: 100
+      peak_price: 18.640
+      add_unlocked: false
 
 # Livermore 核心规则参数
 livermore:

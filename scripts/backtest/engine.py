@@ -15,10 +15,10 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from scripts.processed.fetch_data import fetch_stock_price, fetch_trade_calendar
-from scripts.processed.clean_data import clean_stock_data
+from scripts.processed.fetch_data import fetch_trade_calendar
 from scripts.features.calc_features import build_all_features
 from scripts.strategy.livermore import LivermoreStrategy, Portfolio, Position
+from scripts.utils.asset_loader import build_asset_metadata, fetch_asset_history
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -191,7 +191,7 @@ def run_backtest(
     返回：
         {
             "equity_curve": pd.Series,   # DatetimeIndex，每日总资产
-            "metrics":      dict,        # total_return / annual_return / sharpe_ratio / max_drawdown / annual_vol
+            "metrics":      dict,        # total_return / annual_return / sharpe_ratio / max_drawdown / annual_vol / win_rate
             "trade_log":    list[dict],  # 逐笔成交记录
         }
     """
@@ -210,13 +210,17 @@ def run_backtest(
     backtest_idx  = len(all_dates) - len(trade_dates)
     warmup_start  = all_dates[max(0, backtest_idx - 80)]
 
+    asset_meta = build_asset_metadata()
+    warmup_trade_dates = fetch_trade_calendar(warmup_start, end_date)
     features_map: dict[str, pd.DataFrame] = {}
     for sym in symbols:
         logger.info("准备特征数据：%s", sym)
-        raw     = fetch_stock_price(sym, warmup_start, end_date)
-        cleaned = clean_stock_data(
-            raw,
-            trade_dates=fetch_trade_calendar(warmup_start, end_date),
+        cleaned = fetch_asset_history(
+            symbol=sym,
+            start_date=warmup_start,
+            end_date=end_date,
+            trade_dates=warmup_trade_dates,
+            asset_meta=asset_meta,
         )
         if cleaned is None:
             logger.warning("标的 %s 数据不足，已跳过", sym)
@@ -277,7 +281,7 @@ def run_backtest(
     )
     equity_curve.index = pd.DatetimeIndex(equity_curve.index)
 
-    metrics = calc_metrics(equity_curve, risk_free_rate=risk_free_rate, trade_log=trade_log)
+    metrics = calc_metrics(equity_curve, risk_free_rate=risk_free_rate, trade_log=all_trades)
     logger.info(
         "回测完成 %s ~ %s | 收益率 %.2f%% | 夏普 %.2f | 最大回撤 %.2f%%",
         start_date, end_date,
