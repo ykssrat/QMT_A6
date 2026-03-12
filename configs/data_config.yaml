@@ -1,0 +1,42 @@
+# 数据模块配置
+
+# 数据源设置
+data_source:
+  provider: akshare          # 数据提供方，当前仅支持 akshare
+  retry_times: 3             # 接口请求失败重试次数
+  retry_interval: 5          # 重试间隔（秒）
+
+# 回测默认日期范围
+backtest:
+  start_date: "2015-01-01"
+  end_date: "2024-12-31"
+
+# 支持的资产类型
+assets:
+  stock:
+    market: ["SH", "SZ"]    # 沪深市场
+    adjust: "qfq"            # 复权方式：qfq=前复权, hfq=后复权, 空=不复权
+  fund:
+    type: ["open"]           # open=开放式公募基金
+
+# 数据存储路径（相对项目根目录）
+storage:
+  raw_dir: "datas/raw"       # 原始数据存放目录
+  cache_enabled: true        # 是否启用本地缓存
+  cache_format: "parquet"    # 缓存格式：parquet 或 csv
+
+# 交易费率模型（用于回测）
+cost_model:
+  stock:
+    commission_rate: 0.0003  # 单边佣金率 0.03%
+    slippage_rate: 0.0002    # 滑点 0.02%
+    stamp_duty: 0.001        # 印花税 0.1%（仅卖出）
+  fund:
+    subscription_fee: 0.015  # 申购费 1.5%
+    redemption_fee: 0.005    # 赎回费 0.5%
+
+# 数据清洗参数
+clean:
+  fill_method: "ffill"       # 停牌缺失值填充方式：ffill=前值填充
+  price_limit: 0.11          # 单日涨跌幅上限（超出视为异常值）
+  min_trade_days: 60         # 个股最少有效交易天数（不足则过滤）

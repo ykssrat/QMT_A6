@@ -1,0 +1,28 @@
+# Livermore 策略参数配置
+
+# 通用资金管理参数
+capital:
+  total: 100000              # 初始总资金（元）
+  max_position_count: 10     # 最大同时持仓股票数量
+
+# Livermore 核心规则参数
+livermore:
+  m: 0.1                     # 初始建仓比例（占总资金）
+  c: 0.07                    # 止损/止盈回调阈值（亏损或回调超过此比例触发）
+  h: 0.10                    # 盈利加仓解锁阈值（盈利率超过此值后允许加仓）
+  k: 0.5                     # 加仓比例系数，加仓比例 a = k * r（r 为当前盈利率）
+
+# 信号过滤参数
+signal:
+  confidence_threshold: 1.5  # 信心因子 Z 的最低阈值（超过才入场）
+  min_volume_ratio: 0.8      # 最小相对成交量比率（过滤流动性不足的标的）
+
+# 组合优化参数
+portfolio:
+  method: "equal_weight"     # 权重分配方式：equal_weight=等权, risk_parity=风险平价
+  rebalance_freq: "monthly"  # 再平衡频率：daily / weekly / monthly
+
+# 回测评估参数
+evaluation:
+  risk_free_rate: 0.02       # 无风险利率（年化，用于夏普比率计算）
+  benchmark: "000300"        # 基准指数代码（沪深300）
