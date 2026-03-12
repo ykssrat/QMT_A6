@@ -29,7 +29,7 @@ flowchart LR
 
 | 模块 | 职责 |
 |------|------|
-| 数据接入 | AkShare 拉取沪深 A 股日线行情及基金净值（ETF / LOF / 场外），仅覆盖**模型候选 + 用户持仓 + 用户自选**三类标的，支持重试与本地缓存 |
+| 数据接入 | AkShare 拉取沪深 A 股日线行情及基金净值（ETF / LOF / 场外），覆盖**用户持仓 + 用户自选 +（可选）市场扫描候选**三类标的，支持重试与本地缓存 |
 | 数据清洗 | 停牌填充、复权、异常值过滤、交易日对齐 |
 | 因子计算 | MA/EMA/MACD/RSI/布林带/动量/量比，合成信心因子 Z |
 | 策略决策 | Livermore 建仓 / 止损 / 加仓规则，输出交易信号 |
@@ -43,7 +43,7 @@ flowchart LR
 |------|----------|------|
 | 语言 | Python | 量化生态成熟（Pandas / NumPy / TA-Lib） |
 | 数据接口 | AkShare | 免费、覆盖 A 股与基金，调用有频率限制 |
-| 数据存储 | Parquet 文件 + SQLite | 行情数据用 Parquet，配置/日志用 SQLite |
+| 数据存储 | Parquet + YAML + JSONL | 行情缓存使用 Parquet，策略配置使用 YAML，审计日志按 JSONL 追加写入 |
 | 机器学习 | Scikit-Learn / LightGBM | 辅助预测趋势，按需引入 |
 | 容器化 | Docker | 保证环境一致性，支持 Cron 定时任务 |
 | CI/CD | GitHub Actions | checkout → 安装依赖 → pytest → flake8 |
@@ -53,13 +53,17 @@ flowchart LR
 
 **数据来源**：仅使用 AkShare 接口，覆盖沪深 A 股日线行情与公募基金净值（ETF、LOF、场外基金）。
 
-**标的池来源**（三类取并集，每日更新）：
+**标的池来源**（三类取并集）：
 
 | 来源 | 说明 | 配置位置 |
 |------|------|----------|
-| 模型候选 | 信心因子 Z 超过阈值的标的，由系统扫描宽基股票池得出 | `strategy_config.yaml` → `signal.confidence_threshold` |
+| 模型候选 | 运行信号脚本时可选开启市场扫描（活跃 ETF + 沪深300 成分股），由策略按 Z 阈值自动过滤 | 运行参数 `--market-scan` + `strategy_config.yaml` → `signal.confidence_threshold` |
 | 用户持仓 | 当前实际持有的股票或基金，每日必须纳入计算 | `strategy_config.yaml` → `capital.holdings` |
 | 用户自选 | 手动维护的关注列表，无论是否满足 Z 阈值均参与计算 | `strategy_config.yaml` → `capital.watchlist` |
+
+**配置补充（当前实现）**：
+- `capital.current_positions`：真实持仓明细（成本价、份额、峰值、资产类型）
+- `capital.watchlist_metadata`：自选标的元信息（名称、资产类型），用于识别股票 / ETF / 场外基金
 
 **基金类型说明**：
 
@@ -113,6 +117,8 @@ flowchart TD
 
 **资金不足时（Y 因子）**：按盈利率从低到高排序，依次卖出持仓最差的标的以补足资金后再建仓 / 加仓。
 
+**同日卖出信号去重（当前实现）**：止损优先于 Y 因子卖出；若某标的当日已触发止损，不会再重复生成 Y 因子卖出信号。
+
 **绩效指标**：回测输出以下五大指标，基准为沪深 300（000300）。
 
 | 指标 | 定义 |
@@ -151,6 +157,31 @@ flowchart TD
 - **监控**：记录每日回测损益、脚本异常，邮件 / 钉钉告警
 - **合规**：全量审计日志（时间戳、信号类型、因子值、价格、金额），只追加写入，支持事后回溯
 
+# 快速运行
+
+以下命令均在项目根目录执行（Windows PowerShell）：
+
+```powershell
+# 1) 安装依赖（首次）
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# 2) 生成今日交易建议（仅持仓+自选）
+.\.venv\Scripts\python.exe scripts\strategy\signal_generator.py
+
+# 3) 生成今日交易建议（含市场扫描候选，耗时更长）
+.\.venv\Scripts\python.exe scripts\strategy\signal_generator.py --market-scan
+
+# 4) 运行历史回测并输出绩效报告
+.\.venv\Scripts\python.exe scripts\backtest\run_backtest_report.py
+
+# 5) 运行单元测试
+.\.venv\Scripts\python.exe -m pytest tests\unit -q
+```
+
+运行结果说明：
+- 建议输出：终端按 `[BUY] / [ADD] / [SELL]` 展示代码、金额与触发原因
+- 回测输出：总收益率、年化收益率、夏普、最大回撤、年化波动率、胜率、成交笔数
+
 # 合规要点
 
 遵守证监会及沪深交易所量化交易规定，系统自动检测以下异常并发出警告：
@@ -183,7 +214,7 @@ QMT_A6/
 │   ├── strategy/       # 策略决策（livermore.py、signal_generator.py）
 │   ├── backtest/       # 回测引擎
 │   ├── portfolio/      # 组合优化
-│   └── utils/          # 通用工具
+│   └── utils/          # 通用工具（asset_loader.py、market_scanner.py、audit_logger.py）
 └── tests/
     ├── unit/           # 单元测试
     └── integration/    # 集成测试
@@ -202,6 +233,10 @@ build_all_features(df) -> DataFrame  # 追加所有因子列
 
 # 策略层
 LivermoreStrategy().generate_signals(portfolio, prices, confidence_scores) -> list[dict]
+get_latest_signals(portfolio, start_date, symbols=None, signal_date=None, market_scan=False) -> list[dict]
+
+# 市场扫描层
+get_market_candidates(etf_top_n=30, stock_top_n=20, exclude_symbols=None) -> dict[str, dict]
 
 # 回测层
 run_backtest(symbols, capital, start_date, end_date) -> {
