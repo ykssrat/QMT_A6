@@ -16,6 +16,7 @@ _TEST_CONFIG = {
         "c": 0.07,   # 止损/回调阈值 7%
         "h": 0.10,   # 加仓解锁盈利阈值 10%
         "k": 0.5,    # 加仓系数
+        "y_threshold": 0.55,  # Y 因子阈值
     },
     "signal": {"confidence_threshold": 1.5},
     "capital": {"max_position_count": 10},
@@ -201,3 +202,48 @@ class TestAddPosition:
         # 盈利 15%，但现金为 0 无法加仓（不会生成 add 信号，但应解锁）
         strategy.generate_signals(portfolio, {"000001": 11.5}, {})
         assert pos.add_unlocked is True
+
+
+# ─── Y 因子资金行为（新规则） ────────────────────────────────────────────────
+
+class TestYFactorBehavior:
+    def test_y_low_no_forced_sell_use_cash_only(self, strategy):
+        """
+        Y < 阈值时，不应触发转仓卖出；资金不足时只使用现有现金。
+        """
+        portfolio = Portfolio(cash=1_000.0)
+        # 提高总资产，确保建仓目标金额 > 现金
+        portfolio.positions["000001"] = Position("000001", 10.0, 1000, 10.0)
+        portfolio.positions["000002"] = Position("000002", 10.0, 1000, 10.0)
+
+        prices = {"000001": 9.0, "000002": 11.0, "999999": 20.0}
+        # 待建仓标的 z 达标，但通过多个弱信号将市场 Y 压低到阈值以下
+        z_map = {"999999": 2.0, "weak1": -2.0, "weak2": -2.0, "weak3": -2.0, "weak4": -2.0}
+        signals = strategy.generate_signals(portfolio, prices, z_map)
+
+        y_sells = [s for s in signals if s["action"] == "sell" and "Y 因子转仓" in s["reason"]]
+        buy_sigs = [s for s in signals if s["action"] == "buy" and s["symbol"] == "999999"]
+
+        assert len(y_sells) == 0
+        assert len(buy_sigs) == 1
+        assert buy_sigs[0]["amount"] == portfolio.cash
+
+    def test_y_high_rotate_worst_one(self, strategy):
+        """
+        Y >= 阈值且资金不足时，触发一次 Y 因子转仓，且卖出最差持仓仅 1 只。
+        """
+        portfolio = Portfolio(cash=1_000.0)
+        # 提高总资产，确保建仓目标金额 > 现金
+        # 000001 更差（-5%），但不触发止损（c=7%）
+        portfolio.positions["000001"] = Position("000001", 10.0, 1000, 10.0)
+        portfolio.positions["000002"] = Position("000002", 10.0, 1000, 10.0)
+
+        prices = {"000001": 9.5, "000002": 10.5, "999999": 20.0}
+        # z 显著高于阈值 => Y 较高
+        z_map = {"999999": 4.0}
+
+        signals = strategy.generate_signals(portfolio, prices, z_map)
+        y_sells = [s for s in signals if s["action"] == "sell" and "Y 因子转仓" in s["reason"]]
+
+        assert len(y_sells) == 1
+        assert y_sells[0]["symbol"] == "000001"

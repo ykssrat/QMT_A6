@@ -150,11 +150,15 @@ livermore:
   c: 0.07                    # 止损/止盈回调阈值（亏损或回调超过此比例触发）
   h: 0.10                    # 盈利加仓解锁阈值（盈利率超过此值后允许加仓）
   k: 0.5                     # 加仓比例系数，加仓比例 a = k * r（r 为当前盈利率）
+  y_threshold: 0.55          # Y 因子阈值：Y>=阈值时卖出最差持仓转仓，否则仅用现有现金
 
 # 信号过滤参数
 signal:
   confidence_threshold: 1.5  # 信心因子 Z 的最低阈值（超过才入场）
   min_volume_ratio: 0.8      # 最小相对成交量比率（过滤流动性不足的标的）
+  scan_etf_top_n: 8          # 市场优选候选：ETF 扫描数量上限
+  scan_stock_top_n: 8        # 市场优选候选：个股扫描数量上限
+  scan_eval_days: 365        # 市场优选候选回测窗口（天）
 
 # 组合优化参数
 portfolio:

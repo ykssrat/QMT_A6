@@ -19,7 +19,7 @@ from scripts.processed.fetch_data import fetch_trade_calendar
 from scripts.features.calc_features import build_all_features
 from scripts.strategy.livermore import LivermoreStrategy, Portfolio, Position
 from scripts.utils.asset_loader import build_asset_metadata, fetch_asset_history
-from scripts.utils.market_scanner import get_market_candidates
+from scripts.utils.market_scanner import recommend_best_candidate
 
 import yaml
 
@@ -166,8 +166,8 @@ def get_latest_signals(
         portfolio: 当前持仓与资金状态
         start_date: 历史数据起始日期（用于因子计算，建议至少 60 个交易日前）
         signal_date: 信号日期，格式 "YYYY-MM-DD"，默认取今日
-        market_scan: 是否开启市场扫描（从活跃 ETF 及沪深 300 中寻找潜在买入机会），
-                     开启后会额外拉取数十只标的的历史数据，耗时较长
+        market_scan: 是否开启市场优选推荐（从候选池中按利弗莫尔历史表现推荐 1 个代码），
+                 开启后会额外进行候选回测，耗时较长
 
     返回：
         信号列表（参见 LivermoreStrategy.generate_signals 返回格式）
@@ -181,15 +181,43 @@ def get_latest_signals(
         logger.warning("标的池为空，请在 strategy_config.yaml 中配置 holdings 或 watchlist")
         return []
 
-    # 市场扫描：将活跃 ETF 与沪深 300 个股并入标的池，策略依靠 Z 阈值自动过滤
+    cfg = _load_strategy_config()
+    lv_cfg = cfg.get("livermore", {})
+    signal_cfg = cfg.get("signal", {})
+
+    strategy_params = {
+        "m": float(lv_cfg.get("m", 0.1)),
+        "c": float(lv_cfg.get("c", 0.07)),
+        "h": float(lv_cfg.get("h", 0.10)),
+        "k": float(lv_cfg.get("k", 0.5)),
+        "z_threshold": float(signal_cfg.get("confidence_threshold", 1.5)),
+        "y_threshold": float(lv_cfg.get("y_threshold", 0.55)),
+    }
+
+    # 市场扫描：只推荐 1 个在利弗莫尔策略下历史表现较优的候选代码
     scan_meta: dict[str, dict] | None = None
     if market_scan:
-        logger.info("开启市场扫描，正在拉取候选标的列表...")
+        logger.info("开启市场扫描，正在计算单一优选推荐代码...")
         existing = set(symbols)
-        scan_meta = get_market_candidates(exclude_symbols=existing)
-        scan_symbols = list(scan_meta.keys())
-        symbols = list(dict.fromkeys(symbols + scan_symbols))
-        logger.info("市场扫描新增 %d 只候选标的，标的池合计 %d 只", len(scan_symbols), len(symbols))
+        best = recommend_best_candidate(
+            exclude_symbols=existing,
+            etf_top_n=int(signal_cfg.get("scan_etf_top_n", 8)),
+            stock_top_n=int(signal_cfg.get("scan_stock_top_n", 8)),
+            eval_days=int(signal_cfg.get("scan_eval_days", 365)),
+            strategy_params=strategy_params,
+            risk_free_rate=float(cfg.get("evaluation", {}).get("risk_free_rate", 0.02)),
+        )
+        if best:
+            scan_meta = {
+                best["symbol"]: {
+                    "name": best["symbol"],
+                    "asset_type": best.get("asset_type", "stock"),
+                }
+            }
+            symbols = list(dict.fromkeys(symbols + [best["symbol"]]))
+            logger.info("市场优选推荐代码：%s", best["symbol"])
+        else:
+            logger.warning("市场优选未找到有效候选，本次仅使用持仓+自选标的")
 
     features_map = prepare_features(symbols, start_date, signal_date, extra_meta=scan_meta)
 
@@ -241,7 +269,7 @@ if __name__ == "__main__":
         "--market-scan",
         action="store_true",
         default=False,
-        help="开启市场扫描，从活跃 ETF 和沪深 300 中寻找潜在买入机会（耗时较长）",
+        help="开启市场优选推荐（从候选池中只推荐 1 个代码并参与信号计算，耗时较长）",
     )
     args = parser.parse_args()
 

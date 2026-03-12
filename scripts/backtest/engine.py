@@ -177,6 +177,8 @@ def run_backtest(
     start_date: str,
     end_date: str,
     risk_free_rate: float = 0.02,
+    strategy_params: dict | None = None,
+    asset_meta_override: dict[str, dict] | None = None,
 ) -> dict:
     """
     运行 Livermore 策略历史回测。
@@ -187,6 +189,8 @@ def run_backtest(
         start_date:     回测开始日期，格式 "YYYY-MM-DD"
         end_date:       回测结束日期，格式 "YYYY-MM-DD"
         risk_free_rate: 年化无风险利率，用于夏普比率计算
+        strategy_params: 可选策略参数覆盖（m/c/h/k/z_threshold/y_threshold/max_positions）
+        asset_meta_override: 可选资产类型覆盖，用于回测候选 ETF/基金等非默认股票标的
 
     返回：
         {
@@ -210,7 +214,7 @@ def run_backtest(
     backtest_idx  = len(all_dates) - len(trade_dates)
     warmup_start  = all_dates[max(0, backtest_idx - 80)]
 
-    asset_meta = build_asset_metadata()
+    asset_meta = build_asset_metadata(extra_meta=asset_meta_override)
     warmup_trade_dates = fetch_trade_calendar(warmup_start, end_date)
     features_map: dict[str, pd.DataFrame] = {}
     for sym in symbols:
@@ -232,7 +236,7 @@ def run_backtest(
 
     # ── 2. 初始化组合与策略 ──
     portfolio     = Portfolio(cash=capital)
-    strategy      = LivermoreStrategy()
+    strategy      = LivermoreStrategy(params=strategy_params)
     equity_list:  list[tuple] = []
     all_trades:   list[dict]  = []
 

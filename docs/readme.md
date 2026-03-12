@@ -57,13 +57,15 @@ flowchart LR
 
 | 来源 | 说明 | 配置位置 |
 |------|------|----------|
-| 模型候选 | 运行信号脚本时可选开启市场扫描（活跃 ETF + 沪深300 成分股），由策略按 Z 阈值自动过滤 | 运行参数 `--market-scan` + `strategy_config.yaml` → `signal.confidence_threshold` |
+| 模型候选 | 运行信号脚本时可选开启市场优选（活跃 ETF + 沪深300 先筛候选，再按利弗莫尔历史表现只推荐 1 个代码） | 运行参数 `--market-scan` + `strategy_config.yaml` → `signal.*` |
 | 用户持仓 | 当前实际持有的股票或基金，每日必须纳入计算 | `strategy_config.yaml` → `capital.holdings` |
 | 用户自选 | 手动维护的关注列表，无论是否满足 Z 阈值均参与计算 | `strategy_config.yaml` → `capital.watchlist` |
 
 **配置补充（当前实现）**：
 - `capital.current_positions`：真实持仓明细（成本价、份额、峰值、资产类型）
 - `capital.watchlist_metadata`：自选标的元信息（名称、资产类型），用于识别股票 / ETF / 场外基金
+- `livermore.y_threshold`：Y 因子阈值（决定是否触发转仓卖出）
+- `signal.scan_etf_top_n` / `signal.scan_stock_top_n` / `signal.scan_eval_days`：市场优选推荐参数
 
 **基金类型说明**：
 
@@ -115,7 +117,10 @@ flowchart TD
     回调 -->|否| 持仓
 ```
 
-**资金不足时（Y 因子）**：按盈利率从低到高排序，依次卖出持仓最差的标的以补足资金后再建仓 / 加仓。
+**资金不足时（Y 因子）**：
+- 先由全市场信号（confidence_z）合成 Y 因子
+- 当 $Y \ge y\_threshold$：卖出当前最差持仓 1 只进行转仓
+- 当 $Y < y\_threshold$：不强制卖出补齐，仅使用当前现金（有多少用多少）
 
 **同日卖出信号去重（当前实现）**：止损优先于 Y 因子卖出；若某标的当日已触发止损，不会再重复生成 Y 因子卖出信号。
 
@@ -168,7 +173,7 @@ flowchart TD
 # 2) 生成今日交易建议（仅持仓+自选）
 .\.venv\Scripts\python.exe scripts\strategy\signal_generator.py
 
-# 3) 生成今日交易建议（含市场扫描候选，耗时更长）
+# 3) 生成今日交易建议（开启市场优选，仅推荐 1 个新机会代码）
 .\.venv\Scripts\python.exe scripts\strategy\signal_generator.py --market-scan
 
 # 4) 运行历史回测并输出绩效报告
@@ -176,10 +181,16 @@ flowchart TD
 
 # 5) 运行单元测试
 .\.venv\Scripts\python.exe -m pytest tests\unit -q
+
+# 6) 参数自动调优（网格搜索 m/c/h/k/z/y）
+.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py
+
+# 7) 参数自动调优并写回配置
+.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --apply
 ```
 
 运行结果说明：
-- 建议输出：终端按 `[BUY] / [ADD] / [SELL]` 展示代码、金额与触发原因
+- 建议输出：终端按 `[BUY] / [ADD] / [SELL]` 展示代码、金额与触发原因；开启 `--market-scan` 时会额外打印 1 个优选推荐代码
 - 回测输出：总收益率、年化收益率、夏普、最大回撤、年化波动率、胜率、成交笔数
 
 # 合规要点
@@ -236,7 +247,7 @@ LivermoreStrategy().generate_signals(portfolio, prices, confidence_scores) -> li
 get_latest_signals(portfolio, start_date, symbols=None, signal_date=None, market_scan=False) -> list[dict]
 
 # 市场扫描层
-get_market_candidates(etf_top_n=30, stock_top_n=20, exclude_symbols=None) -> dict[str, dict]
+recommend_best_candidate(exclude_symbols=None, etf_top_n=8, stock_top_n=8, eval_days=365) -> dict | None
 
 # 回测层
 run_backtest(symbols, capital, start_date, end_date) -> {
