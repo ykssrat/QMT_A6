@@ -4,6 +4,31 @@
 capital:
   total: 100000              # 初始总资金（元）
   max_position_count: 10     # 最大同时持仓股票数量
+  available_cash: 100000     # 当前可用现金（元），运行信号生成时直接读取
+
+  # 用户当前持仓标的代码列表（无论 Z 是否达标，每日均参与计算）
+  holdings:
+    # - "000001"             # 示例：平安银行
+    # - "100032"             # 示例：某场外基金代码
+
+  # 用户自选关注列表（无论 Z 是否达标，每日均参与计算）
+  watchlist:
+    # - "600519"             # 示例：贵州茅台
+    # - "300750"             # 示例：宁德时代
+    # - "510300"             # 示例：沪深300 ETF
+
+  # 当前实际持仓明细：用于直接生成交易建议
+  current_positions:
+    # - symbol: "600519"
+    #   cost_price: 1680.0
+    #   shares: 100
+    #   peak_price: 1755.0
+    #   add_unlocked: false
+    # - symbol: "510300"
+    #   cost_price: 3.92
+    #   shares: 5000
+    #   peak_price: 4.08
+    #   add_unlocked: true
 
 # Livermore 核心规则参数
 livermore:

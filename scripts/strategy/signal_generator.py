@@ -20,8 +20,51 @@ from scripts.processed.clean_data import clean_stock_data
 from scripts.features.calc_features import build_all_features
 from scripts.strategy.livermore import LivermoreStrategy, Portfolio, Position
 
+import yaml
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+_CONFIG_PATH = os.path.join(ROOT_DIR, "configs", "strategy_config.yaml")
+
+
+def _load_strategy_config() -> dict:
+    """加载策略配置文件，返回完整配置字典。"""
+    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def resolve_symbol_pool(extra_symbols: list[str] | None = None) -> list[str]:
+    """
+    合并三类标的来源，返回去重后的完整标的池。
+
+    来源说明：
+        - 用户持仓（holdings）：来自 strategy_config.yaml capital.holdings
+        - 用户自选（watchlist）：来自 strategy_config.yaml capital.watchlist
+        - 额外传入（extra_symbols）：调用方临时追加，用于模型候选扩展
+
+    模型候选标的（Z >= threshold）在 generate_signals 阶段由策略自动过滤，
+    本函数只负责汇集"必须进入计算"的标的集合。
+
+    参数：
+        extra_symbols: 调用方传入的额外标的列表（可选）
+
+    返回：
+        去重保序的标的代码列表
+    """
+    cfg = _load_strategy_config()
+    capital = cfg.get("capital", {})
+    holdings = capital.get("holdings") or []
+    watchlist = capital.get("watchlist") or []
+    extra    = extra_symbols or []
+
+    # 按持仓 → 自选 → 额外的顺序合并，dict.fromkeys 去重同时保持顺序
+    merged = list(dict.fromkeys(holdings + watchlist + extra))
+    logger.info(
+        "标的池：%d 条（持仓 %d / 自选 %d / 额外 %d）",
+        len(merged), len(holdings), len(watchlist), len(extra),
+    )
+    return merged
 
 
 def prepare_features(
@@ -46,16 +89,16 @@ def prepare_features(
 
 
 def get_latest_signals(
-    symbols: list[str],
     portfolio: Portfolio,
     start_date: str,
+    symbols: list[str] | None = None,
     signal_date: str | None = None,
 ) -> list[dict]:
     """
     获取指定日期（默认当日）的交易信号建议。
 
     参数：
-        symbols: 待扫描的标的代码列表
+        symbols: 待扫描的标的代码列表；为 None 时自动读取配置中的持仓与自选列表
         portfolio: 当前持仓与资金状态
         start_date: 历史数据起始日期（用于因子计算，建议至少 60 个交易日前）
         signal_date: 信号日期，格式 "YYYY-MM-DD"，默认取今日
@@ -65,6 +108,12 @@ def get_latest_signals(
     """
     if signal_date is None:
         signal_date = date.today().strftime("%Y-%m-%d")
+
+    if not symbols:
+        symbols = resolve_symbol_pool()
+    if not symbols:
+        logger.warning("标的池为空，请在 strategy_config.yaml 中配置 holdings 或 watchlist")
+        return []
 
     features_map = prepare_features(symbols, start_date, signal_date)
 
