@@ -5,6 +5,7 @@
 import logging
 import os
 import sys
+from collections import defaultdict
 
 import yaml
 
@@ -13,6 +14,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from scripts.backtest.engine import run_backtest
+from scripts.processed.fetch_data import get_latest_trade_date
 from scripts.strategy.signal_generator import resolve_symbol_pool
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,73 @@ def _load_yaml(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def _calc_realized_pnl_by_symbol(trade_log: list[dict]) -> dict[str, float]:
+    """按代码汇总已实现盈亏（来自 sell 记录的 pnl 字段）。"""
+    result: dict[str, float] = defaultdict(float)
+    for t in trade_log:
+        if t.get("action") != "sell":
+            continue
+        sym = str(t.get("symbol", "")).strip()
+        if not sym:
+            continue
+        result[sym] += float(t.get("pnl", 0.0) or 0.0)
+    return dict(result)
+
+
+def _print_symbol_breakdown(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    capital: float,
+    risk_free_rate: float,
+    realized_pnl_by_symbol: dict[str, float],
+) -> None:
+    """输出每个代码的单标的回测指标与已实现盈亏。"""
+    rows: list[dict] = []
+
+    root_logger = logging.getLogger()
+    prev_level = root_logger.level
+    root_logger.setLevel(logging.WARNING)
+    try:
+        for sym in symbols:
+            try:
+                single = run_backtest(
+                    symbols=[sym],
+                    capital=capital,
+                    start_date=start_date,
+                    end_date=end_date,
+                    risk_free_rate=risk_free_rate,
+                )
+                metrics = single.get("metrics", {})
+                if not metrics:
+                    continue
+                rows.append({
+                    "symbol": sym,
+                    "total_return": float(metrics.get("total_return", 0.0)),
+                    "sharpe": float(metrics.get("sharpe_ratio", 0.0)),
+                    "win_rate": float(metrics.get("win_rate", 0.0)),
+                    "realized_pnl": float(realized_pnl_by_symbol.get(sym, 0.0)),
+                })
+            except Exception as e:
+                logger.warning("单标的分解失败：%s - %s", sym, e)
+    finally:
+        root_logger.setLevel(prev_level)
+
+    if not rows:
+        print("分代码表现: 无可用数据")
+        return
+
+    rows.sort(key=lambda x: (x["total_return"], x["sharpe"], x["win_rate"]), reverse=True)
+
+    print("分代码表现（单标的回测）：")
+    print("代码      收益率      夏普    胜率    已实现盈亏(元)")
+    for r in rows:
+        print(
+            f"{r['symbol']:<8} {r['total_return']:>8.2%}  {r['sharpe']:>7.4f}  "
+            f"{r['win_rate']:>6.2%}  {r['realized_pnl']:>12.2f}"
+        )
+
+
 def main() -> None:
     data_cfg = _load_yaml(_DATA_CONFIG_PATH)
     strategy_cfg = _load_yaml(_STRATEGY_CONFIG_PATH)
@@ -39,18 +108,27 @@ def main() -> None:
     if not symbols:
         raise ValueError("标的池为空，请先在 strategy_config.yaml 中配置 holdings/watchlist/current_positions")
 
+    start_date = backtest_cfg.get("start_date", "2015-01-01")
+    end_date = get_latest_trade_date()
+
     result = run_backtest(
         symbols=symbols,
         capital=float(capital_cfg.get("total", 100000)),
-        start_date=backtest_cfg.get("start_date", "2015-01-01"),
-        end_date=backtest_cfg.get("end_date", "2024-12-31"),
+        start_date=start_date,
+        end_date=end_date,
         risk_free_rate=float(evaluation_cfg.get("risk_free_rate", 0.02)),
     )
 
     metrics = result["metrics"]
+    trade_log = result.get("trade_log", [])
+    realized_pnl_by_symbol = _calc_realized_pnl_by_symbol(trade_log)
+    capital = float(capital_cfg.get("total", 100000))
+    risk_free_rate = float(evaluation_cfg.get("risk_free_rate", 0.02))
+
     print("=" * 60)
     print("Livermore 回测绩效报告")
     print("=" * 60)
+    print(f"回测区间: {start_date} ~ {end_date}（结束日自动取最近交易日）")
     print(f"标的池: {', '.join(symbols)}")
     print(f"总收益率:   {metrics.get('total_return', 0.0):.2%}")
     print(f"年化收益率: {metrics.get('annual_return', 0.0):.2%}")
@@ -58,7 +136,16 @@ def main() -> None:
     print(f"最大回撤:   {metrics.get('max_drawdown', 0.0):.2%}")
     print(f"年化波动率: {metrics.get('annual_vol', 0.0):.2%}")
     print(f"胜率:       {metrics.get('win_rate', 0.0):.2%}")
-    print(f"成交笔数:   {len(result.get('trade_log', []))}")
+    print(f"成交笔数:   {len(trade_log)}")
+    print("-" * 60)
+    _print_symbol_breakdown(
+        symbols=symbols,
+        start_date=start_date,
+        end_date=end_date,
+        capital=capital,
+        risk_free_rate=risk_free_rate,
+        realized_pnl_by_symbol=realized_pnl_by_symbol,
+    )
     print("=" * 60)
 
 

@@ -17,6 +17,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from scripts.backtest.engine import run_backtest
+from scripts.processed.fetch_data import get_latest_trade_date
 from scripts.strategy.signal_generator import resolve_symbol_pool
 
 _DATA_CONFIG_PATH = os.path.join(ROOT_DIR, "configs", "data_config.yaml")
@@ -29,12 +30,11 @@ def _load_yaml(path: str) -> dict:
 
 
 def _score(metrics: dict) -> float:
-    """评分函数：收益、夏普、胜率加分，回撤惩罚。"""
+    """评分函数：仅优化收益率、夏普比率、胜率三项（越大越好）。"""
     total_return = float(metrics.get("total_return", 0.0))
     sharpe = float(metrics.get("sharpe_ratio", 0.0))
     win_rate = float(metrics.get("win_rate", 0.0))
-    max_drawdown = float(metrics.get("max_drawdown", 0.0))
-    return total_return + 0.3 * sharpe + 0.2 * win_rate + 0.2 * max_drawdown
+    return total_return + sharpe + win_rate
 
 
 def _parse_grid(raw: str) -> list[float]:
@@ -85,7 +85,7 @@ def main() -> None:
     capital_cfg = strategy_cfg.get("capital", {})
 
     start_date = backtest_cfg.get("start_date", "2015-01-01")
-    end_date = backtest_cfg.get("end_date", "2024-12-31")
+    end_date = get_latest_trade_date()
     capital = float(capital_cfg.get("total", 100000))
     risk_free_rate = float(evaluation_cfg.get("risk_free_rate", 0.02))
 
@@ -138,7 +138,7 @@ def main() -> None:
                 f"[{case_idx}/{total_cases}] score={score:.4f} "
                 f"ret={metrics.get('total_return', 0.0):.2%} "
                 f"sharpe={metrics.get('sharpe_ratio', 0.0):.3f} "
-                f"mdd={metrics.get('max_drawdown', 0.0):.2%} "
+                f"win={metrics.get('win_rate', 0.0):.2%} "
                 f"params={params}"
             )
 

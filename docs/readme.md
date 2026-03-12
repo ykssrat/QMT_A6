@@ -135,6 +135,10 @@ flowchart TD
 | 年化波动率 | 日收益率标准差 × $\sqrt{252}$ |
 | 胜率 | 回测期间盈利平仓笔数 / 总平仓笔数，$W = N_{win} / N_{total}$ |
 
+**参数优化目标（当前实现）**：
+- 自动调优只优化三项目标：收益率、夏普比率、胜率
+- 评分函数：$score = total\_return + sharpe\_ratio + win\_rate$
+
 # 因子体系
 
 | 类别 | 因子 |
@@ -191,7 +195,7 @@ flowchart TD
 
 运行结果说明：
 - 建议输出：终端按 `[BUY] / [ADD] / [SELL]` 展示代码、金额与触发原因；开启 `--market-scan` 时会额外打印 1 个优选推荐代码
-- 回测输出：总收益率、年化收益率、夏普、最大回撤、年化波动率、胜率、成交笔数
+- 回测输出：结束日自动取最近交易日；除组合总指标外，还会输出每个代码的单标的收益率/夏普/胜率与已实现盈亏
 
 # 合规要点
 
@@ -238,6 +242,7 @@ QMT_A6/
 fetch_stock_price(symbol, start_date, end_date, adjust="qfq") -> DataFrame
 fetch_fund_nav(fund_code, start_date, end_date) -> DataFrame
 fetch_trade_calendar(start_date, end_date) -> list[str]
+get_latest_trade_date(ref_date=None) -> str
 
 # 因子层
 build_all_features(df) -> DataFrame  # 追加所有因子列

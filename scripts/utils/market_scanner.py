@@ -161,17 +161,15 @@ def get_market_candidates(
 
 def _score_backtest(metrics: dict) -> float:
     """
-    将回测结果压缩为单一评分，兼顾收益、夏普、回撤。
+    将回测结果压缩为单一评分，只优化三项目标：收益率、夏普比率、胜率。
 
     分数越高越优：
-        score = total_return + 0.3 * sharpe_ratio + 0.2 * win_rate + 0.2 * max_drawdown
-    注意：max_drawdown 为负值，天然形成惩罚项。
+        score = total_return + sharpe_ratio + win_rate
     """
     total_return = float(metrics.get("total_return", 0.0))
     sharpe = float(metrics.get("sharpe_ratio", 0.0))
     win_rate = float(metrics.get("win_rate", 0.0))
-    max_drawdown = float(metrics.get("max_drawdown", 0.0))
-    return total_return + 0.3 * sharpe + 0.2 * win_rate + 0.2 * max_drawdown
+    return total_return + sharpe + win_rate
 
 
 def recommend_best_candidate(

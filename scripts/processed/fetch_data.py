@@ -5,6 +5,7 @@
 import os
 import time
 import logging
+from datetime import date
 import yaml
 import pandas as pd
 import akshare as ak
@@ -268,6 +269,32 @@ def fetch_trade_calendar(start_date: str, end_date: str) -> list[str]:
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     mask = (df["trade_date"] >= start_date) & (df["trade_date"] <= end_date)
     return df.loc[mask, "trade_date"].dt.strftime("%Y-%m-%d").tolist()
+
+
+def get_latest_trade_date(ref_date: str | None = None) -> str:
+    """
+    获取不晚于 ref_date 的最近交易日。
+
+    参数：
+        ref_date: 参考日期，格式 "YYYY-MM-DD"；为空时使用今天
+
+    返回：
+        最近交易日，格式 "YYYY-MM-DD"
+    """
+    if ref_date is None:
+        ref_date = date.today().strftime("%Y-%m-%d")
+
+    try:
+        df = ak.tool_trade_date_hist_sina()
+        df["trade_date"] = pd.to_datetime(df["trade_date"])
+        mask = df["trade_date"] <= ref_date
+        if not mask.any():
+            raise ValueError(f"在 {ref_date} 之前未找到交易日")
+        latest = df.loc[mask, "trade_date"].max()
+        return latest.strftime("%Y-%m-%d")
+    except Exception as e:
+        logger.warning("获取最近交易日失败，降级使用参考日期 %s：%s", ref_date, e)
+        return ref_date
 
 
 if __name__ == "__main__":
