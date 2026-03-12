@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行单元测试
+        run: pytest tests/unit/ -v --tb=short --cov=scripts --cov-report=term-missing
+
+      - name: 运行集成测试（允许失败）
+        run: pytest tests/integration/ -v --tb=short
+        continue-on-error: true
+
+      - name: 代码风格检查（flake8）
+        run: |
+          flake8 scripts/ tests/ \
+            --max-line-length=120 \
+            --exclude=__pycache__,*.pyc \
+            --extend-ignore=E203,W503

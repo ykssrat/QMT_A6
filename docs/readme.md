@@ -5,11 +5,11 @@
 | 属性 | 说明 |
 |------|------|
 | 资金规模 | 1k – 100 万人民币 |
-| 资产范围 | 沪深 A 股股票、公募基金 |
+| 资产范围 | 沪深 A 股股票、公募基金（ETF、LOF、场外基金） |
 | 交易频率 | 日线级（非高频） |
 | 执行方式 | 仅输出建议，手动下单 |
 | 核心策略 | Livermore 原则：**浮亏不加仓、盈利加仓** |
-| 绩效指标 | 收益率、夏普比率、最大回撤、波动率 |
+| 绩效指标 | 收益率、夏普比率、最大回撤、波动率、胜率 |
 | 合规框架 | 遵守证监会及沪深交易所程序化交易规定 |
 
 # 系统架构
@@ -29,7 +29,7 @@ flowchart LR
 
 | 模块 | 职责 |
 |------|------|
-| 数据接入 | AkShare 拉取股票行情、基金净值，支持重试与本地缓存 |
+| 数据接入 | AkShare 拉取沪深 A 股日线行情及基金净值（ETF / LOF / 场外），仅覆盖**模型候选 + 用户持仓 + 用户自选**三类标的，支持重试与本地缓存 |
 | 数据清洗 | 停牌填充、复权、异常值过滤、交易日对齐 |
 | 因子计算 | MA/EMA/MACD/RSI/布林带/动量/量比，合成信心因子 Z |
 | 策略决策 | Livermore 建仓 / 止损 / 加仓规则，输出交易信号 |
@@ -51,7 +51,23 @@ flowchart LR
 
 # 数据规范
 
-**数据来源**：仅使用 AkShare 接口，覆盖沪深 A 股日线行情与公募基金净值。
+**数据来源**：仅使用 AkShare 接口，覆盖沪深 A 股日线行情与公募基金净值（ETF、LOF、场外基金）。
+
+**标的池来源**（三类取并集，每日更新）：
+
+| 来源 | 说明 | 配置位置 |
+|------|------|----------|
+| 模型候选 | 信心因子 Z 超过阈值的标的，由系统扫描宽基股票池得出 | `strategy_config.yaml` → `signal.confidence_threshold` |
+| 用户持仓 | 当前实际持有的股票或基金，每日必须纳入计算 | `strategy_config.yaml` → `capital.holdings` |
+| 用户自选 | 手动维护的关注列表，无论是否满足 Z 阈值均参与计算 | `strategy_config.yaml` → `capital.watchlist` |
+
+**基金类型说明**：
+
+| 类型 | 交易方式 | AkShare 接口 |
+|------|----------|--------------|
+| ETF | 场内实时撮合，使用日线行情价格 | `fund_etf_hist_em` |
+| LOF | 场内可交易，亦可通过基金公司申赎 | `fund_lof_hist_em` |
+| 场外基金 | 按日净值申购/赎回，T+1 确认 | `fund_open_fund_info_em` |
 
 **清洗规则**：
 - 停牌缺失：前值填充（ffill）
@@ -97,7 +113,16 @@ flowchart TD
 
 **资金不足时（Y 因子）**：按盈利率从低到高排序，依次卖出持仓最差的标的以补足资金后再建仓 / 加仓。
 
-**风险指标**：回测输出收益率、夏普比率、最大回撤、年化波动率，基准为沪深 300（000300）。
+**绩效指标**：回测输出以下五大指标，基准为沪深 300（000300）。
+
+| 指标 | 定义 |
+|------|------|
+| 总收益率 | $(V_{end} - V_{start}) / V_{start}$ |
+| 年化收益率 | 按 252 交易日折算的复利收益率 |
+| 夏普比率 | $(R_{annualized} - R_f) / \sigma_{annualized}$ |
+| 最大回撤 | 净值曲线峰值到谷值的最大跌幅 |
+| 年化波动率 | 日收益率标准差 × $\sqrt{252}$ |
+| 胜率 | 回测期间盈利平仓笔数 / 总平仓笔数，$W = N_{win} / N_{total}$ |
 
 # 因子体系
 
@@ -179,7 +204,18 @@ build_all_features(df) -> DataFrame  # 追加所有因子列
 LivermoreStrategy().generate_signals(portfolio, prices, confidence_scores) -> list[dict]
 
 # 回测层
-run_backtest(strategy, capital, start_date, end_date) -> dict  # 净值曲线 + 绩效指标
+run_backtest(symbols, capital, start_date, end_date) -> {
+    "equity_curve": pd.Series,        # 每日净值曲线
+    "metrics": {                       # 绩效指标
+        "total_return": float,
+        "annual_return": float,
+        "sharpe_ratio": float,
+        "max_drawdown": float,
+        "annual_vol": float,
+        "win_rate": float,             # 胜率 = 盈利平仓笔数 / 总平仓笔数
+    },
+    "trade_log": list[dict],           # 逐笔交易记录
+}
 ```
 
 ## 参考链接
