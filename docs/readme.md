@@ -177,25 +177,33 @@ flowchart TD
 # 2) 生成今日交易建议（仅持仓+自选）
 .\.venv\Scripts\python.exe scripts\strategy\signal_generator.py
 
-# 3) 生成今日交易建议（开启市场优选，仅推荐 1 个新机会代码）
-.\.venv\Scripts\python.exe scripts\strategy\signal_generator.py --market-scan
+# 2.1) 独立荐股（只输出 1 个代码）
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py
 
-# 4) 运行历史回测并输出绩效报告
+# 2.2) 独立荐股（设置超时，避免网络阻塞）
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 30
+
+# 3) 运行历史回测并输出绩效报告
 .\.venv\Scripts\python.exe scripts\backtest\run_backtest_report.py
 
-# 5) 运行单元测试
+# 4) 运行单元测试
 .\.venv\Scripts\python.exe -m pytest tests\unit -q
 
-# 6) 参数自动调优（网格搜索 m/c/h/k/z/y）
+# 5) 参数自动调优（网格搜索 m/c/h/k/z/y）
 .\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py
 
-# 7) 参数自动调优并写回配置
+# 5.1) 参数自动调优（限量跑 50 组，便于预估耗时）
+.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --max-cases 50
+
+# 6) 参数自动调优并写回配置
 .\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --apply
 ```
 
 运行结果说明：
-- 建议输出：终端按 `[BUY] / [ADD] / [SELL]` 展示代码、金额与触发原因；开启 `--market-scan` 时会额外打印 1 个优选推荐代码
-- 回测输出：结束日自动取最近交易日；除组合总指标外，还会输出每个代码的单标的收益率/夏普/胜率与已实现盈亏
+- 独立荐股输出：`recommend_one.py` 仅输出 1 个推荐代码（若无候选则输出 `NONE`），并自动追加到 `datas/recommend/荐股.txt`
+- 建议输出：`signal_generator.py` 输出持仓交易建议
+- 回测输出：结束日自动取最近交易日；除组合总指标外，还会输出每个代码的单标的收益率/夏普，以及按组合成交记录统计的分代码胜率（赢/平仓）与已实现盈亏
+- 调优输出：默认会跑完整网格；可用 `--max-cases` 限制运行组数，先估时再全量执行
 
 # 合规要点
 

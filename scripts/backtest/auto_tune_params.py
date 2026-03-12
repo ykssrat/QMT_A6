@@ -7,8 +7,10 @@
 
 import argparse
 import itertools
+import logging
 import os
 import sys
+import time
 
 import yaml
 
@@ -63,6 +65,8 @@ def _apply_best_to_config(best_params: dict) -> None:
 
 
 def main() -> None:
+    logging.disable(logging.CRITICAL)
+
     parser = argparse.ArgumentParser(description="Livermore 参数自动调优")
     parser.add_argument("--m-grid", default="0.05,0.08,0.1")
     parser.add_argument("--c-grid", default="0.05,0.07,0.09")
@@ -70,6 +74,7 @@ def main() -> None:
     parser.add_argument("--k-grid", default="0.3,0.5,0.7")
     parser.add_argument("--z-grid", default="1.0,1.3,1.5")
     parser.add_argument("--y-grid", default="0.50,0.55,0.60")
+    parser.add_argument("--max-cases", type=int, default=0, help="最多运行多少组参数，0 表示不限制")
     parser.add_argument("--apply", action="store_true", help="将最优参数写回 strategy_config.yaml")
     args = parser.parse_args()
 
@@ -97,14 +102,19 @@ def main() -> None:
     y_grid = _parse_grid(args.y_grid)
 
     total_cases = len(m_grid) * len(c_grid) * len(h_grid) * len(k_grid) * len(z_grid) * len(y_grid)
+    if args.max_cases > 0:
+        total_cases = min(total_cases, args.max_cases)
     print(f"开始调优，共 {total_cases} 组参数...")
 
     best = None
     case_idx = 0
+    started_at = time.time()
 
     for m, c, h, k, z_threshold, y_threshold in itertools.product(
         m_grid, c_grid, h_grid, k_grid, z_grid, y_grid
     ):
+        if args.max_cases > 0 and case_idx >= args.max_cases:
+            break
         case_idx += 1
         params = {
             "m": m,
@@ -147,6 +157,9 @@ def main() -> None:
 
     if not best:
         raise RuntimeError("调优失败：没有可用结果")
+
+    elapsed = time.time() - started_at
+    print(f"耗时: {elapsed:.1f} 秒")
 
     print("=" * 60)
     print("最优参数")

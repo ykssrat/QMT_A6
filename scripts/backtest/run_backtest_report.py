@@ -18,7 +18,7 @@ from scripts.processed.fetch_data import get_latest_trade_date
 from scripts.strategy.signal_generator import resolve_symbol_pool
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s [%(levelname)s] %(message)s")
 
 _DATA_CONFIG_PATH = os.path.join(ROOT_DIR, "configs", "data_config.yaml")
 _STRATEGY_CONFIG_PATH = os.path.join(ROOT_DIR, "configs", "strategy_config.yaml")
@@ -42,6 +42,38 @@ def _calc_realized_pnl_by_symbol(trade_log: list[dict]) -> dict[str, float]:
     return dict(result)
 
 
+def _calc_win_rate_by_symbol(trade_log: list[dict]) -> dict[str, tuple[int, int, float | None]]:
+    """
+    按代码统计胜率。
+
+    返回：
+        {symbol: (win_count, sell_count, win_rate_or_none)}
+    """
+    sells: dict[str, int] = defaultdict(int)
+    wins: dict[str, int] = defaultdict(int)
+
+    for t in trade_log:
+        if t.get("action") != "sell":
+            continue
+        sym = str(t.get("symbol", "")).strip()
+        if not sym:
+            continue
+        sells[sym] += 1
+        if float(t.get("pnl", 0.0) or 0.0) > 0:
+            wins[sym] += 1
+
+    result: dict[str, tuple[int, int, float | None]] = {}
+    symbols = set(list(sells.keys()) + list(wins.keys()))
+    for sym in symbols:
+        sell_count = sells.get(sym, 0)
+        win_count = wins.get(sym, 0)
+        if sell_count == 0:
+            result[sym] = (win_count, sell_count, None)
+        else:
+            result[sym] = (win_count, sell_count, round(win_count / sell_count, 4))
+    return result
+
+
 def _print_symbol_breakdown(
     symbols: list[str],
     start_date: str,
@@ -49,13 +81,14 @@ def _print_symbol_breakdown(
     capital: float,
     risk_free_rate: float,
     realized_pnl_by_symbol: dict[str, float],
+    win_rate_by_symbol: dict[str, tuple[int, int, float | None]],
 ) -> None:
     """输出每个代码的单标的回测指标与已实现盈亏。"""
     rows: list[dict] = []
 
     root_logger = logging.getLogger()
-    prev_level = root_logger.level
-    root_logger.setLevel(logging.WARNING)
+    prev_disable = root_logger.manager.disable
+    logging.disable(logging.CRITICAL)
     try:
         for sym in symbols:
             try:
@@ -73,30 +106,44 @@ def _print_symbol_breakdown(
                     "symbol": sym,
                     "total_return": float(metrics.get("total_return", 0.0)),
                     "sharpe": float(metrics.get("sharpe_ratio", 0.0)),
-                    "win_rate": float(metrics.get("win_rate", 0.0)),
                     "realized_pnl": float(realized_pnl_by_symbol.get(sym, 0.0)),
+                    "win_stat": win_rate_by_symbol.get(sym, (0, 0, None)),
                 })
             except Exception as e:
                 logger.warning("单标的分解失败：%s - %s", sym, e)
     finally:
-        root_logger.setLevel(prev_level)
+        logging.disable(prev_disable)
 
     if not rows:
         print("分代码表现: 无可用数据")
         return
 
-    rows.sort(key=lambda x: (x["total_return"], x["sharpe"], x["win_rate"]), reverse=True)
+    rows.sort(
+        key=lambda x: (
+            x["total_return"],
+            x["sharpe"],
+            (x["win_stat"][2] if x["win_stat"][2] is not None else -1.0),
+        ),
+        reverse=True,
+    )
 
-    print("分代码表现（单标的回测）：")
-    print("代码      收益率      夏普    胜率    已实现盈亏(元)")
+    print("分代码表现（单标的收益/夏普 + 组合成交胜率）：")
+    print("代码      收益率      夏普    胜率(赢/平仓)      已实现盈亏(元)")
     for r in rows:
+        win_count, sell_count, win_rate = r["win_stat"]
+        if win_rate is None:
+            win_text = "N/A"
+        else:
+            win_text = f"{win_rate:.2%}({win_count}/{sell_count})"
         print(
             f"{r['symbol']:<8} {r['total_return']:>8.2%}  {r['sharpe']:>7.4f}  "
-            f"{r['win_rate']:>6.2%}  {r['realized_pnl']:>12.2f}"
+            f"{win_text:>14}  {r['realized_pnl']:>14.2f}"
         )
 
 
 def main() -> None:
+    logging.disable(logging.CRITICAL)
+
     data_cfg = _load_yaml(_DATA_CONFIG_PATH)
     strategy_cfg = _load_yaml(_STRATEGY_CONFIG_PATH)
 
@@ -122,6 +169,7 @@ def main() -> None:
     metrics = result["metrics"]
     trade_log = result.get("trade_log", [])
     realized_pnl_by_symbol = _calc_realized_pnl_by_symbol(trade_log)
+    win_rate_by_symbol = _calc_win_rate_by_symbol(trade_log)
     capital = float(capital_cfg.get("total", 100000))
     risk_free_rate = float(evaluation_cfg.get("risk_free_rate", 0.02))
 
@@ -145,6 +193,7 @@ def main() -> None:
         capital=capital,
         risk_free_rate=risk_free_rate,
         realized_pnl_by_symbol=realized_pnl_by_symbol,
+        win_rate_by_symbol=win_rate_by_symbol,
     )
     print("=" * 60)
 

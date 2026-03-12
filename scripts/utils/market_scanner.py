@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 from datetime import date, timedelta
+from contextlib import contextmanager
 
 import pandas as pd
 
@@ -25,6 +26,42 @@ logger = logging.getLogger(__name__)
 # ETF 最低成交额过滤阈值（元），过滤掉流动性极差的标的
 _MIN_ETF_AMOUNT = 5_000_000  # 500 万元
 _DEFAULT_EVAL_CAPITAL = 100000
+
+
+def _get_active_proxy_env() -> dict[str, str]:
+    """获取当前进程中的代理环境变量。"""
+    keys = [
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+    ]
+    return {k: os.environ.get(k, "") for k in keys if os.environ.get(k, "")}
+
+
+@contextmanager
+def _temporary_disable_proxy(disable_proxy: bool):
+    """临时禁用代理环境变量，退出上下文后恢复。"""
+    if not disable_proxy:
+        yield
+        return
+
+    keys = [
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+    ]
+    backup = {k: os.environ.get(k) for k in keys}
+    try:
+        for k in keys:
+            if k in os.environ:
+                del os.environ[k]
+        os.environ["NO_PROXY"] = "*"
+        os.environ["no_proxy"] = "*"
+        yield
+    finally:
+        for k in keys:
+            if backup.get(k) is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = backup[k]
 
 
 def scan_etf_candidates(
@@ -179,6 +216,7 @@ def recommend_best_candidate(
     eval_days: int = 365,
     strategy_params: dict | None = None,
     risk_free_rate: float = 0.02,
+    disable_proxy: bool = False,
 ) -> dict | None:
     """
     推荐 1 个在利弗莫尔策略下历史表现较优的候选代码。
@@ -198,47 +236,54 @@ def recommend_best_candidate(
         若无有效候选则返回 None
     """
     exclude = exclude_symbols or set()
-    universe_meta = get_market_candidates(
-        etf_top_n=etf_top_n,
-        stock_top_n=stock_top_n,
-        exclude_symbols=exclude,
-    )
-    if not universe_meta:
-        logger.warning("市场优选：候选集合为空")
-        return None
+    with _temporary_disable_proxy(disable_proxy=disable_proxy):
+        active_proxy = _get_active_proxy_env()
+        if active_proxy:
+            logger.warning("市场优选当前检测到代理环境变量：%s", ", ".join(sorted(active_proxy.keys())))
+        elif disable_proxy:
+            logger.info("市场优选已临时禁用代理环境变量")
 
-    end_date = date.today().strftime("%Y-%m-%d")
-    start_date = (date.today() - timedelta(days=eval_days)).strftime("%Y-%m-%d")
+        universe_meta = get_market_candidates(
+            etf_top_n=etf_top_n,
+            stock_top_n=stock_top_n,
+            exclude_symbols=exclude,
+        )
+        if not universe_meta:
+            logger.warning("市场优选：候选集合为空")
+            return None
 
-    best: dict | None = None
-    for symbol, meta in universe_meta.items():
-        try:
-            result = run_backtest(
-                symbols=[symbol],
-                capital=_DEFAULT_EVAL_CAPITAL,
-                start_date=start_date,
-                end_date=end_date,
-                risk_free_rate=risk_free_rate,
-                strategy_params=strategy_params,
-                asset_meta_override={symbol: meta},
-            )
-            metrics = result.get("metrics", {})
-            if not metrics:
+        end_date = date.today().strftime("%Y-%m-%d")
+        start_date = (date.today() - timedelta(days=eval_days)).strftime("%Y-%m-%d")
+
+        best: dict | None = None
+        for symbol, meta in universe_meta.items():
+            try:
+                result = run_backtest(
+                    symbols=[symbol],
+                    capital=_DEFAULT_EVAL_CAPITAL,
+                    start_date=start_date,
+                    end_date=end_date,
+                    risk_free_rate=risk_free_rate,
+                    strategy_params=strategy_params,
+                    asset_meta_override={symbol: meta},
+                )
+                metrics = result.get("metrics", {})
+                if not metrics:
+                    continue
+
+                score = _score_backtest(metrics)
+                candidate = {
+                    "symbol": symbol,
+                    "asset_type": meta.get("asset_type", "stock"),
+                    "score": score,
+                    "metrics": metrics,
+                }
+                if best is None or candidate["score"] > best["score"]:
+                    best = candidate
+
+            except Exception as e:
+                logger.warning("市场优选回测失败：%s - %s", symbol, e)
                 continue
-
-            score = _score_backtest(metrics)
-            candidate = {
-                "symbol": symbol,
-                "asset_type": meta.get("asset_type", "stock"),
-                "score": score,
-                "metrics": metrics,
-            }
-            if best is None or candidate["score"] > best["score"]:
-                best = candidate
-
-        except Exception as e:
-            logger.warning("市场优选回测失败：%s - %s", symbol, e)
-            continue
 
     if best:
         logger.info(
