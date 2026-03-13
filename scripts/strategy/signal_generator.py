@@ -28,6 +28,20 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %
 _CONFIG_PATH = os.path.join(ROOT_DIR, "configs", "strategy_config.yaml")
 
 
+def _configure_runtime_logging(quiet: bool = True) -> None:
+    """配置脚本运行日志级别，默认静默第三方与数据流水线 INFO 噪音。"""
+    target_level = logging.ERROR if quiet else logging.WARNING
+    logging.getLogger().setLevel(target_level)
+    noisy_loggers = [
+        "scripts.processed.fetch_data",
+        "scripts.processed.clean_data",
+        "scripts.utils.asset_loader",
+        "scripts.features.calc_features",
+    ]
+    for logger_name in noisy_loggers:
+        logging.getLogger(logger_name).setLevel(target_level)
+
+
 def _load_strategy_config() -> dict:
     """加载策略配置文件，返回完整配置字典。"""
     with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -213,6 +227,7 @@ def _print_signals(signals: list[dict], signal_date: str) -> None:
 
 
 if __name__ == "__main__":
+    _configure_runtime_logging(quiet=True)
     signal_date = date.today().strftime("%Y-%m-%d")
     start_date = (date.today() - timedelta(days=180)).strftime("%Y-%m-%d")
     runtime_portfolio = load_portfolio_from_config()

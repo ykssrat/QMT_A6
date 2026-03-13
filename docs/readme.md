@@ -57,7 +57,7 @@ flowchart LR
 
 | 来源 | 说明 | 配置位置 |
 |------|------|----------|
-| 模型候选 | 运行信号脚本时可选开启市场优选（活跃 ETF + 沪深300 先筛候选，再按利弗莫尔历史表现只推荐 1 个代码） | 运行参数 `--market-scan` + `strategy_config.yaml` → `signal.*` |
+| 独立荐股候选 | 由独立荐股脚本扫描活跃 ETF + 沪深300 候选，并按利弗莫尔历史表现只输出 1 个代码 | `strategy_config.yaml` → `signal.scan_*` + `scripts/strategy/recommend_one.py` |
 | 用户持仓 | 当前实际持有的股票或基金，每日必须纳入计算 | `strategy_config.yaml` → `capital.holdings` |
 | 用户自选 | 手动维护的关注列表，无论是否满足 Z 阈值均参与计算 | `strategy_config.yaml` → `capital.watchlist` |
 
@@ -65,7 +65,7 @@ flowchart LR
 - `capital.current_positions`：真实持仓明细（成本价、份额、峰值、资产类型）
 - `capital.watchlist_metadata`：自选标的元信息（名称、资产类型），用于识别股票 / ETF / 场外基金
 - `livermore.y_threshold`：Y 因子阈值（决定是否触发转仓卖出）
-- `signal.scan_etf_top_n` / `signal.scan_stock_top_n` / `signal.scan_eval_days`：市场优选推荐参数
+- `signal.scan_etf_top_n` / `signal.scan_stock_top_n` / `signal.scan_eval_days`：独立荐股参数
 
 **基金类型说明**：
 
@@ -197,6 +197,9 @@ flowchart TD
 
 # 6) 参数自动调优并写回配置
 .\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --apply
+
+# 7) 参数自动调优并限量且写回配置
+.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --max-cases 120 --apply
 ```
 
 运行结果说明：
