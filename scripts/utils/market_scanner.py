@@ -245,6 +245,83 @@ def load_market_candidates_from_pool(
         asset_type = str(item.get("asset_type", "stock"))
         bucketed.setdefault(asset_type, []).append(item)
 
+    # 个股候选实时补齐行情，避免离线池中 turnover=0 导致按代码顺序退化。
+    if stock_top_n > 0 and bucketed.get("stock"):
+        stock_spot_map: dict[str, dict] = {}
+        try:
+            stock_spot_df = ak.stock_zh_a_spot_em()
+            if not stock_spot_df.empty and "代码" in stock_spot_df.columns:
+                if "成交额" in stock_spot_df.columns:
+                    stock_spot_df["成交额"] = pd.to_numeric(stock_spot_df["成交额"], errors="coerce").fillna(0.0)
+                    stock_spot_df = stock_spot_df.sort_values("成交额", ascending=False).reset_index(drop=True)
+
+                for idx, row in stock_spot_df.iterrows():
+                    symbol = str(row.get("代码", "")).strip()
+                    if not symbol:
+                        continue
+                    stock_spot_map[symbol] = {
+                        "name": str(row.get("名称", symbol)).strip() or symbol,
+                        "latest_price": _safe_float(row.get("最新价")),
+                        "turnover": _safe_float(row.get("成交额")),
+                        "pool_rank": idx + 1,
+                    }
+
+            if stock_spot_map:
+                for item in bucketed["stock"]:
+                    meta = stock_spot_map.get(str(item.get("symbol", "")))
+                    if not meta:
+                        continue
+                    item["name"] = meta["name"]
+                    item["latest_price"] = float(meta["latest_price"])
+                    item["turnover"] = float(meta["turnover"])
+                    item["pool_rank"] = int(meta["pool_rank"])
+                    item["source"] = "stock_zh_a_spot_em"
+            else:
+                logger.warning("未获取到 A 股实时行情，个股候选将沿用离线池排序")
+        except Exception as exc:
+            logger.warning("补齐个股实时行情失败，个股候选将沿用离线池排序：%s", exc)
+
+        # 兜底：若个股成交额全部缺失/为0，按市场前缀轮转混排，避免 000xxx 顺序偏置。
+        stock_items = bucketed.get("stock", [])
+        if stock_items:
+            max_turnover = max(_safe_float(item.get("turnover"), 0.0) for item in stock_items)
+            if max_turnover <= 0:
+                by_prefix: dict[str, list[dict]] = {}
+                for item in stock_items:
+                    symbol = str(item.get("symbol", "")).strip()
+                    prefix = symbol[:1] if symbol else ""
+                    by_prefix.setdefault(prefix, []).append(item)
+
+                for prefix_items in by_prefix.values():
+                    prefix_items.sort(
+                        key=lambda x: (
+                            int(x.get("pool_rank", 999999) or 999999),
+                            str(x.get("symbol", "")),
+                        )
+                    )
+
+                # 优先覆盖主板常见前缀，其他前缀随后补齐
+                prefix_order = ["6", "0", "3"]
+                prefix_order.extend(sorted(p for p in by_prefix.keys() if p not in prefix_order))
+
+                remixed: list[dict] = []
+                progressed = True
+                while progressed:
+                    progressed = False
+                    for p in prefix_order:
+                        queue = by_prefix.get(p) or []
+                        if not queue:
+                            continue
+                        remixed.append(queue.pop(0))
+                        progressed = True
+
+                if remixed:
+                    # 赋予新的排序位次，后续统一排序时可直接使用。
+                    for idx, item in enumerate(remixed, start=1):
+                        item["pool_rank"] = idx
+                    bucketed["stock"] = remixed
+                    logger.warning("个股候选缺少成交额，已启用按前缀轮转混排兜底策略")
+
     def _sort_key(item: dict) -> tuple:
         turnover = _safe_float(item.get("turnover"), 0.0)
         rank_score = _safe_float(item.get("rank_score"), 0.0)

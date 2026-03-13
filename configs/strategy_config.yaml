@@ -1,8 +1,8 @@
 capital:
   total: 100000
   max_position_count: 20
-  available_cash: 12036.65
-  stock_available_cash: 0.0
+  available_cash: 12126.48
+  stock_available_cash: 89.83
   fund_available_cash: 12036.65
   holdings:
   - 016874
@@ -91,10 +91,10 @@ capital:
   - symbol: '600108'
     name: 亚盛集团
     asset_type: stock
-    cost_price: 6.3075
-    shares: 400
+    cost_price: 6.39
+    shares: 700
     peak_price: 6.96
-    add_unlocked: true
+    add_unlocked: false
   - symbol: '002885'
     name: 京泉华
     asset_type: stock
