@@ -390,18 +390,23 @@ def get_market_candidates(
     )
 
 
+def _calc_realized_pnl(trade_log: list[dict]) -> float:
+    """统计已实现盈亏（仅卖出成交 pnl）。"""
+    total = 0.0
+    for trade in trade_log:
+        if trade.get("action") == "sell":
+            total += float(trade.get("pnl", 0.0) or 0.0)
+    return total
+
+
 def _score_backtest(metrics: dict) -> float:
     """
-    将回测结果压缩为单一评分，只优化三项目标：收益率、夏普比率、胜率。
+    将回测结果压缩为单一评分：仅优化已实现盈亏。
 
     分数越高越优：
-        score = total_return + sharpe_ratio + win_rate
+        score = realized_pnl
     """
-    total_return = float(metrics.get("total_return", 0.0))
-    sharpe = float(metrics.get("sharpe_ratio", 0.0))
-    raw_win_rate = metrics.get("win_rate", 0.0)
-    win_rate = float(raw_win_rate) if raw_win_rate is not None else 0.0
-    return total_return + sharpe + win_rate
+    return float(metrics.get("realized_pnl", 0.0) or 0.0)
 
 
 def _candidate_feature_vector(candidate: dict) -> list[float]:
@@ -567,6 +572,11 @@ def recommend_best_candidate(
                 if not metrics:
                     continue
 
+                metrics = {
+                    **metrics,
+                    "realized_pnl": _calc_realized_pnl(result.get("trade_log", [])),
+                }
+
                 score = _score_backtest(metrics)
                 candidate = {
                     "symbol": symbol,
@@ -592,9 +602,10 @@ def recommend_best_candidate(
 
     if best:
         logger.info(
-            "市场优选推荐：%s（score=%.4f, return=%.2f%%, sharpe=%.2f, mdd=%.2f%%）",
+            "市场优选推荐：%s（score=%.2f, pnl=%.2f, return=%.2f%%, sharpe=%.2f, mdd=%.2f%%）",
             best["symbol"],
             best["score"],
+            float(best["metrics"].get("realized_pnl", 0.0)),
             100 * float(best["metrics"].get("total_return", 0.0)),
             float(best["metrics"].get("sharpe_ratio", 0.0)),
             100 * float(best["metrics"].get("max_drawdown", 0.0)),

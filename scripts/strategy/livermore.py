@@ -102,60 +102,107 @@ class LivermoreStrategy:
         lv = cfg["livermore"]
         lv_asset_params = (lv.get("asset_params") or {})
 
-        exchange_lv = (lv_asset_params.get("exchange") or {})
+        stock_lv = (lv_asset_params.get("stock") or lv_asset_params.get("exchange") or {})
+        etf_lv = (lv_asset_params.get("etf") or lv_asset_params.get("exchange") or stock_lv)
+        fund_lv = (lv_asset_params.get("fund_open") or stock_lv)
 
-        # 默认值优先从场内分组读取，再回退到旧键与硬编码常量
-        self.m: float = float(params.get("m", exchange_lv.get("m", lv.get("m", 0.1))))
-        self.c: float = float(params.get("c", exchange_lv.get("c", lv.get("c", 0.07))))
-        self.h: float = float(params.get("h", exchange_lv.get("h", lv.get("h", 0.10))))
-        self.k: float = float(params.get("k", exchange_lv.get("k", lv.get("k", 0.5))))
+        # 默认值优先从 stock 分组读取，再回退到旧键与硬编码常量
+        self.m: float = float(params.get("m", stock_lv.get("m", lv.get("m", 0.1))))
+        self.c: float = float(params.get("c", stock_lv.get("c", lv.get("c", 0.07))))
+        self.h: float = float(params.get("h", stock_lv.get("h", lv.get("h", 0.10))))
+        self.k: float = float(params.get("k", stock_lv.get("k", lv.get("k", 0.5))))
         self.max_positions: int = int(params.get("max_positions", cfg["capital"]["max_position_count"]))
 
         # 按资产类型参数（场内/场外两套），缺失时回退到默认参数，兼容旧配置
         param_asset_params = (params.get("asset_params") or {})
+        param_exchange = (param_asset_params.get("exchange") or {})
+        param_stock = (param_asset_params.get("stock") or param_exchange)
+        param_etf = (param_asset_params.get("etf") or param_exchange)
+        param_fund = (param_asset_params.get("fund_open") or {})
+
+        stock_defaults = {
+            "m": float(stock_lv.get("m", self.m)),
+            "c": float(stock_lv.get("c", self.c)),
+            "h": float(stock_lv.get("h", self.h)),
+            "k": float(stock_lv.get("k", self.k)),
+        }
+        etf_defaults = {
+            "m": float(etf_lv.get("m", stock_defaults["m"])),
+            "c": float(etf_lv.get("c", stock_defaults["c"])),
+            "h": float(etf_lv.get("h", stock_defaults["h"])),
+            "k": float(etf_lv.get("k", stock_defaults["k"])),
+        }
+        fund_defaults = {
+            "m": float(fund_lv.get("m", stock_defaults["m"])),
+            "c": float(fund_lv.get("c", stock_defaults["c"])),
+            "h": float(fund_lv.get("h", stock_defaults["h"])),
+            "k": float(fund_lv.get("k", stock_defaults["k"])),
+        }
 
         self.asset_params: dict[str, dict[str, float]] = {
-            "exchange": {
+            "stock": {
                 "m": float(
-                    param_asset_params.get("exchange", {}).get(
-                        "m", lv_asset_params.get("exchange", {}).get("m", self.m)
+                    param_stock.get(
+                        "m", stock_defaults["m"]
                     )
                 ),
                 "c": float(
-                    param_asset_params.get("exchange", {}).get(
-                        "c", lv_asset_params.get("exchange", {}).get("c", self.c)
+                    param_stock.get(
+                        "c", stock_defaults["c"]
                     )
                 ),
                 "h": float(
-                    param_asset_params.get("exchange", {}).get(
-                        "h", lv_asset_params.get("exchange", {}).get("h", self.h)
+                    param_stock.get(
+                        "h", stock_defaults["h"]
                     )
                 ),
                 "k": float(
-                    param_asset_params.get("exchange", {}).get(
-                        "k", lv_asset_params.get("exchange", {}).get("k", self.k)
+                    param_stock.get(
+                        "k", stock_defaults["k"]
+                    )
+                ),
+            },
+            "etf": {
+                "m": float(
+                    param_etf.get(
+                        "m", etf_defaults["m"]
+                    )
+                ),
+                "c": float(
+                    param_etf.get(
+                        "c", etf_defaults["c"]
+                    )
+                ),
+                "h": float(
+                    param_etf.get(
+                        "h", etf_defaults["h"]
+                    )
+                ),
+                "k": float(
+                    param_etf.get(
+                        "k", etf_defaults["k"]
                     )
                 ),
             },
             "fund_open": {
                 "m": float(
-                    param_asset_params.get("fund_open", {}).get(
-                        "m", lv_asset_params.get("fund_open", {}).get("m", self.m)
+                    param_fund.get(
+                        "m", fund_defaults["m"]
                     )
                 ),
                 "c": float(
-                    param_asset_params.get("fund_open", {}).get(
-                        "c", lv_asset_params.get("fund_open", {}).get("c", self.c)
+                    param_fund.get(
+                        "c", fund_defaults["c"]
                     )
                 ),
                 "h": float(
-                    param_asset_params.get("fund_open", {}).get(
-                        "h", lv_asset_params.get("fund_open", {}).get("h", self.h)
+                    param_fund.get(
+                        "h", fund_defaults["h"]
                     )
                 ),
                 "k": float(
-                    param_asset_params.get("fund_open", {}).get(
-                        "k", lv_asset_params.get("fund_open", {}).get("k", self.k)
+                    param_fund.get(
+                        "k", fund_defaults["k"]
                     )
                 ),
             },
@@ -165,7 +212,9 @@ class LivermoreStrategy:
         """将资产类型映射为参数组。"""
         if asset_type == "fund_open":
             return "fund_open"
-        return "exchange"
+        if asset_type in {"etf", "lof"}:
+            return "etf"
+        return "stock"
 
     def _param_for_symbol(self, symbol: str, asset_types: dict[str, str], key: str) -> float:
         """获取单标的参数值。"""
@@ -202,9 +251,14 @@ class LivermoreStrategy:
         asset_types = asset_types or {}
 
         market_regime_by_group = {
-            "exchange": self._compute_market_regime(
+            "stock": self._compute_market_regime(
                 confidence_scores=confidence_scores,
-                include_groups={"exchange"},
+                include_groups={"stock"},
+                asset_types=asset_types,
+            ),
+            "etf": self._compute_market_regime(
+                confidence_scores=confidence_scores,
+                include_groups={"etf"},
                 asset_types=asset_types,
             ),
             "fund_open": self._compute_market_regime(

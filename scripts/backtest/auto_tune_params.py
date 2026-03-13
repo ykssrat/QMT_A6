@@ -35,12 +35,17 @@ def _load_yaml(path: str) -> dict:
 
 
 def _score(metrics: dict) -> float:
-    """评分函数：仅优化收益率、夏普比率、胜率三项（越大越好）。"""
-    total_return = float(metrics.get("total_return", 0.0))
-    sharpe = float(metrics.get("sharpe_ratio", 0.0))
-    raw_win_rate = metrics.get("win_rate", 0.0)
-    win_rate = float(raw_win_rate) if raw_win_rate is not None else 0.0
-    return total_return + sharpe + win_rate
+    """评分函数：仅优化已实现盈亏（越大越好）。"""
+    return float(metrics.get("realized_pnl", 0.0) or 0.0)
+
+
+def _calc_realized_pnl(trade_log: list[dict]) -> float:
+    """统计已实现盈亏（仅卖出成交 pnl）。"""
+    total = 0.0
+    for trade in trade_log:
+        if trade.get("action") == "sell":
+            total += float(trade.get("pnl", 0.0) or 0.0)
+    return total
 
 
 def _parse_grid(raw: str) -> list[float]:
@@ -115,11 +120,16 @@ def _evaluate_case(task: dict) -> dict:
             strategy_params=params,
         )
         metrics = result.get("metrics", {})
+        realized_pnl = _calc_realized_pnl(result.get("trade_log", []))
+        metrics_with_pnl = {
+            **metrics,
+            "realized_pnl": float(realized_pnl),
+        }
         return {
             "case_idx": task["case_idx"],
             "params": params,
-            "metrics": metrics,
-            "score": _score(metrics),
+            "metrics": metrics_with_pnl,
+            "score": _score(metrics_with_pnl),
             "error": None,
         }
     except Exception as exc:
@@ -158,12 +168,25 @@ def _apply_best_to_config(best_by_group: dict[str, dict]) -> None:
     cfg["livermore"].setdefault("asset_params", {})
     cfg["signal"].setdefault("asset_params", {})
 
-    exchange_best = best_by_group.get("exchange")
+    stock_best = best_by_group.get("stock")
+    etf_best = best_by_group.get("etf")
     fund_best = best_by_group.get("fund_open")
 
-    if exchange_best:
-        p = exchange_best["params"]
-        cfg["livermore"]["asset_params"]["exchange"] = {
+    # 清理旧分组键
+    cfg["livermore"]["asset_params"].pop("exchange", None)
+
+    if stock_best:
+        p = stock_best["params"]
+        cfg["livermore"]["asset_params"]["stock"] = {
+            "m": float(p["m"]),
+            "c": float(p["c"]),
+            "h": float(p["h"]),
+            "k": float(p["k"]),
+        }
+
+    if etf_best:
+        p = etf_best["params"]
+        cfg["livermore"]["asset_params"]["etf"] = {
             "m": float(p["m"]),
             "c": float(p["c"]),
             "h": float(p["h"]),
@@ -216,14 +239,17 @@ def main() -> None:
         raise ValueError("标的池为空，请先配置 holdings/watchlist/current_positions")
 
     asset_meta = build_asset_metadata()
-    exchange_symbols: list[str] = []
+    stock_symbols: list[str] = []
+    etf_symbols: list[str] = []
     fund_open_symbols: list[str] = []
     for sym in symbols:
         asset_type = str((asset_meta.get(sym) or {}).get("asset_type", "stock"))
         if asset_type == "fund_open":
             fund_open_symbols.append(sym)
+        elif asset_type in {"etf", "lof"}:
+            etf_symbols.append(sym)
         else:
-            exchange_symbols.append(sym)
+            stock_symbols.append(sym)
 
     backtest_cfg = data_cfg.get("backtest", {})
     evaluation_cfg = strategy_cfg.get("evaluation", {})
@@ -258,7 +284,7 @@ def main() -> None:
         print(f"开始调优窗口 [{window_days}日]：{window_start_date} ~ {end_date}")
 
         best_by_group: dict[str, dict] = {}
-        for group_name, group_symbols in (("exchange", exchange_symbols), ("fund_open", fund_open_symbols)):
+        for group_name, group_symbols in (("stock", stock_symbols), ("etf", etf_symbols), ("fund_open", fund_open_symbols)):
             if not group_symbols:
                 print(f"跳过 {group_name} 组：无可用标的")
                 continue
@@ -330,6 +356,7 @@ def main() -> None:
                     print(
                         f"[{window_days}日 {group_name} {completed}/{total_cases}] ETA {eta_str} "
                         f"score={outcome['score']:.4f} "
+                        f"pnl={metrics.get('realized_pnl', 0.0):.2f} "
                         f"ret={metrics.get('total_return', 0.0):.2%} "
                         f"sharpe={metrics.get('sharpe_ratio', 0.0):.3f} "
                         f"win={win_rate:.2%} "
@@ -352,7 +379,9 @@ def main() -> None:
             print("对应指标:")
             for k, v in best["metrics"].items():
                 if isinstance(v, float):
-                    if "rate" in k or "return" in k or "drawdown" in k or k == "annual_vol" or k == "win_rate":
+                    if k == "realized_pnl":
+                        print(f"  {k}: {v:.2f}")
+                    elif "rate" in k or "return" in k or "drawdown" in k or k == "win_rate":
                         print(f"  {k}: {v:.2%}")
                     else:
                         print(f"  {k}: {v:.4f}")

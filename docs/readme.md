@@ -130,16 +130,17 @@ flowchart TD
 
 **同日卖出信号去重（当前实现）**：止损优先于 Y 因子卖出；若某标的当日已触发止损，不会再重复生成 Y 因子卖出信号。
 
-**绩效指标**：回测输出以下五大指标，基准为沪深 300（000300）。
+**绩效指标**：回测核心关注以下四项指标，基准为沪深 300（000300）。
+**绩效指标**：回测核心关注以下四项指标，基准为沪深 300（000300）。
 
 | 指标 | 定义 |
 |------|------|
 | 总收益率 | $(V_{end} - V_{start}) / V_{start}$ |
-| 年化收益率 | 按 252 交易日折算的复利收益率 |
 | 夏普比率 | $(R_{annualized} - R_f) / \sigma_{annualized}$ |
 | 最大回撤 | 净值曲线峰值到谷值的最大跌幅 |
-| 年化波动率 | 日收益率标准差 × $\sqrt{252}$ |
 | 胜率 | 回测期间盈利平仓笔数 / 总平仓笔数，$W = N_{win} / N_{total}$ |
+
+补充：若回测区间内没有任何卖出成交，胜率显示为 `N/A`（而不是 0），避免与“有亏损卖出且胜率为 0”混淆。
 
 **参数优化目标（当前实现）**：
 - 自动调优按资产类型分组独立执行（`exchange` 与 `fund_open` 各跑一套 m/c/h/k）
@@ -288,11 +289,9 @@ run_backtest(symbols, capital, start_date, end_date, risk_free_rate=0.02, strate
     "equity_curve": pd.Series,        # 每日净值曲线
     "metrics": {                       # 绩效指标
         "total_return": float,
-        "annual_return": float,
         "sharpe_ratio": float,
         "max_drawdown": float,
-        "annual_vol": float,
-        "win_rate": float,             # 胜率 = 盈利平仓笔数 / 总平仓笔数
+        "win_rate": float | None,      # 无卖出时为 None（展示层显示 N/A）
     },
     "trade_log": list[dict],           # 逐笔交易记录
 }

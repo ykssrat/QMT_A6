@@ -9,7 +9,9 @@
 """
 
 import argparse
+import concurrent.futures
 import logging
+import multiprocessing as mp
 import os
 import random
 import sys
@@ -127,19 +129,27 @@ def _run_symbol_trials(
     total_sells = 0
     success_count = 0
 
+    unique_windows = list(dict.fromkeys(windows))
+    window_result_cache: dict[tuple[str, str], dict | None] = {}
+
     attempt_idx = 0
-    max_attempts = max(target_trials * 5, len(windows))
+    max_attempts = max(target_trials * 5, len(unique_windows))
     while success_count < target_trials and attempt_idx < max_attempts:
-        s, ed = windows[attempt_idx % len(windows)]
+        s, ed = unique_windows[attempt_idx % len(unique_windows)]
         attempt_idx += 1
         try:
-            result = run_backtest(
-                symbols=[symbol],
-                capital=capital,
-                start_date=s,
-                end_date=ed,
-                risk_free_rate=risk_free_rate,
-            )
+            cache_key = (s, ed)
+            if cache_key not in window_result_cache:
+                window_result_cache[cache_key] = run_backtest(
+                    symbols=[symbol],
+                    capital=capital,
+                    start_date=s,
+                    end_date=ed,
+                    risk_free_rate=risk_free_rate,
+                )
+            result = window_result_cache[cache_key]
+            if not result:
+                continue
             metrics = result.get("metrics", {})
             trade_log = result.get("trade_log", [])
             total_return_sum += float(metrics.get("total_return", 0.0))
@@ -160,12 +170,11 @@ def _run_symbol_trials(
     avg_realized_pnl = realized_pnl_sum / success_count
     if total_sells == 0:
         win_rate = None
-        score_win = 0.0
     else:
         win_rate = total_wins / total_sells
-        score_win = win_rate
 
-    score = avg_total_return + avg_sharpe + score_win
+    # 排序评分仅使用已实现盈亏，避免高浮盈掩盖真实兑现能力
+    score = avg_realized_pnl
 
     return {
         "symbol": symbol,
@@ -177,6 +186,28 @@ def _run_symbol_trials(
         "trials": success_count,
         "target_trials": target_trials,
     }
+
+
+def _resolve_worker_count(requested_workers: int, total_jobs: int) -> int:
+    """解析回测报告实际并发进程数。"""
+    if total_jobs <= 1:
+        return 1
+    if requested_workers > 0:
+        return max(1, min(requested_workers, total_jobs))
+    cpu_count = mp.cpu_count() or 1
+    return max(1, min(cpu_count - 1 if cpu_count > 1 else 1, total_jobs))
+
+
+def _run_symbol_trials_worker(task: tuple[str, list[tuple[str, str]], float, float, int]) -> dict | None:
+    """多进程 worker：执行单代码多轮实验。"""
+    symbol, windows, capital, risk_free_rate, trials = task
+    return _run_symbol_trials(
+        symbol=symbol,
+        windows=windows,
+        capital=capital,
+        risk_free_rate=risk_free_rate,
+        target_trials=trials,
+    )
 
 
 def _print_symbol_breakdown(rows: list[dict], trials_per_symbol: int, trial_days: int) -> None:
@@ -206,8 +237,9 @@ def main() -> None:
     logging.disable(logging.CRITICAL)
 
     parser = argparse.ArgumentParser(description="分代码独立回测报告")
-    parser.add_argument("--trials-per-symbol", type=int, default=100, help="每个代码独立实验次数")
+    parser.add_argument("--trials-per-symbol", type=int, default=50, help="每个代码独立实验次数（默认50）")
     parser.add_argument("--trial-days", type=int, default=120, help="单次独立实验窗口长度（交易日，固定不超过120）")
+    parser.add_argument("--workers", type=int, default=0, help="并发进程数，0 表示自动")
     parser.add_argument("--seed", type=int, default=42, help="随机种子，保证实验可复现")
     parser.add_argument("--show-meta", action="store_true", help="显示回测区间、标的池和参数信息")
     parser.add_argument("--show-progress", action="store_true", help="显示代码级运行进度")
@@ -259,7 +291,7 @@ def main() -> None:
         print(f"单次实验窗口: {args.trial_days} 交易日")
         print("-" * 60)
 
-    rows: list[dict] = []
+    symbol_tasks: list[tuple[str, list[tuple[str, str]], float, float, int]] = []
     for idx, sym in enumerate(symbols, 1):
         if args.show_progress:
             print(f"进度: [{idx}/{len(symbols)}] {sym}")
@@ -278,15 +310,35 @@ def main() -> None:
             trial_days=args.trial_days,
             rng=rng,
         )
-        row = _run_symbol_trials(
-            symbol=sym,
-            windows=windows,
-            capital=capital,
-            risk_free_rate=risk_free_rate,
-            target_trials=args.trials_per_symbol,
-        )
-        if row is not None:
-            rows.append(row)
+        if windows:
+            symbol_tasks.append((sym, windows, capital, risk_free_rate, args.trials_per_symbol))
+
+    rows: list[dict] = []
+    workers = _resolve_worker_count(args.workers, len(symbol_tasks))
+    if args.show_meta:
+        print(f"并发进程数: {workers}")
+
+    if workers == 1:
+        for task in symbol_tasks:
+            row = _run_symbol_trials_worker(task)
+            if row is not None:
+                rows.append(row)
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_run_symbol_trials_worker, task) for task in symbol_tasks]
+            done = 0
+            total = len(futures)
+            for fut in concurrent.futures.as_completed(futures):
+                done += 1
+                if args.show_progress:
+                    print(f"并行进度: [{done}/{total}]")
+                try:
+                    row = fut.result()
+                except Exception as exc:
+                    logger.warning("并行回测任务失败: %s", exc)
+                    continue
+                if row is not None:
+                    rows.append(row)
 
     if args.show_meta:
         print("-" * 60)

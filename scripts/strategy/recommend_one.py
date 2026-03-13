@@ -115,6 +115,36 @@ def _append_recommend_record(symbol: str) -> None:
             f.write(f"{date_key}：{codes_text}\n")
 
 
+def _load_today_recommended_symbols() -> set[str]:
+    """读取当日已推荐代码（兼容新旧两种文件格式）。"""
+    if not os.path.exists(_RECOMMEND_FILE):
+        return set()
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    results: set[str] = set()
+    with open(_RECOMMEND_FILE, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            # 新格式：YYYY-MM-DD：code1、code2
+            if "：" in line:
+                left, right = line.split("：", 1)
+                if left.strip() != today:
+                    continue
+                results.update(x.strip() for x in re.split(r"[、,，]", right) if x.strip())
+                continue
+
+            # 旧格式：YYYY-MM-DD HH:MM:SS\tcode
+            if "\t" in line:
+                ts, code = line.split("\t", 1)
+                if ts.strip()[:10] == today and code.strip():
+                    results.add(code.strip())
+
+    return results
+
+
 def _expand_exclude_symbols(exclude_symbols: set[str]) -> set[str]:
     """扩展排除列表：若排除场外基金某代码，同时排除同前5位代码（A/C类）。"""
     pool = load_candidate_pool_file()
@@ -156,31 +186,39 @@ def main() -> None:
     signal_cfg = cfg.get("signal", {})
 
     lv_asset_params = (lv_cfg.get("asset_params") or {})
-    exchange_lv = (lv_asset_params.get("exchange") or {})
-    fund_lv = (lv_asset_params.get("fund_open") or {})
+    stock_lv = (lv_asset_params.get("stock") or lv_asset_params.get("exchange") or {})
+    etf_lv = (lv_asset_params.get("etf") or lv_asset_params.get("exchange") or stock_lv)
+    fund_lv = (lv_asset_params.get("fund_open") or stock_lv)
 
     strategy_params = {
-        "m": float(exchange_lv.get("m", lv_cfg.get("m", 0.1))),
-        "c": float(exchange_lv.get("c", lv_cfg.get("c", 0.07))),
-        "h": float(exchange_lv.get("h", lv_cfg.get("h", 0.10))),
-        "k": float(exchange_lv.get("k", lv_cfg.get("k", 0.5))),
+        "m": float(stock_lv.get("m", lv_cfg.get("m", 0.1))),
+        "c": float(stock_lv.get("c", lv_cfg.get("c", 0.07))),
+        "h": float(stock_lv.get("h", lv_cfg.get("h", 0.10))),
+        "k": float(stock_lv.get("k", lv_cfg.get("k", 0.5))),
         "asset_params": {
-            "exchange": {
-                "m": float(exchange_lv.get("m", lv_cfg.get("m", 0.1))),
-                "c": float(exchange_lv.get("c", lv_cfg.get("c", 0.07))),
-                "h": float(exchange_lv.get("h", lv_cfg.get("h", 0.10))),
-                "k": float(exchange_lv.get("k", lv_cfg.get("k", 0.5))),
+            "stock": {
+                "m": float(stock_lv.get("m", lv_cfg.get("m", 0.1))),
+                "c": float(stock_lv.get("c", lv_cfg.get("c", 0.07))),
+                "h": float(stock_lv.get("h", lv_cfg.get("h", 0.10))),
+                "k": float(stock_lv.get("k", lv_cfg.get("k", 0.5))),
+            },
+            "etf": {
+                "m": float(etf_lv.get("m", stock_lv.get("m", lv_cfg.get("m", 0.1)))),
+                "c": float(etf_lv.get("c", stock_lv.get("c", lv_cfg.get("c", 0.07)))),
+                "h": float(etf_lv.get("h", stock_lv.get("h", lv_cfg.get("h", 0.10)))),
+                "k": float(etf_lv.get("k", stock_lv.get("k", lv_cfg.get("k", 0.5)))),
             },
             "fund_open": {
-                "m": float(fund_lv.get("m", exchange_lv.get("m", lv_cfg.get("m", 0.1)))),
-                "c": float(fund_lv.get("c", exchange_lv.get("c", lv_cfg.get("c", 0.07)))),
-                "h": float(fund_lv.get("h", exchange_lv.get("h", lv_cfg.get("h", 0.10)))),
-                "k": float(fund_lv.get("k", exchange_lv.get("k", lv_cfg.get("k", 0.5)))),
+                "m": float(fund_lv.get("m", stock_lv.get("m", lv_cfg.get("m", 0.1)))),
+                "c": float(fund_lv.get("c", stock_lv.get("c", lv_cfg.get("c", 0.07)))),
+                "h": float(fund_lv.get("h", stock_lv.get("h", lv_cfg.get("h", 0.10)))),
+                "k": float(fund_lv.get("k", stock_lv.get("k", lv_cfg.get("k", 0.5)))),
             },
         },
     }
 
     exclude_symbols = set(resolve_symbol_pool())
+    exclude_symbols.update(_load_today_recommended_symbols())
     config_excludes = signal_cfg.get("recommend_exclude_symbols", [])
     if isinstance(config_excludes, list):
         exclude_symbols.update(str(x).strip() for x in config_excludes if str(x).strip())
