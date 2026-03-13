@@ -182,13 +182,10 @@ flowchart TD
 # 2) 生成今日交易建议（仅持仓+自选）
 .\.venv\Scripts\python.exe scripts\strategy\signal_generator.py
 
-# 2.1) 独立荐股（只输出 1 个代码）
-.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py
-
-# 2.2) 构建离线候选池（建议每日先执行）
+# 2.1) 构建离线候选池（建议每日先执行）
 .\.venv\Scripts\python.exe scripts\strategy\build_candidate_pool.py
 
-# 2.3) 独立荐股（设置超时，避免网络阻塞）
+# 2.2) 独立荐股（始终设置超时，避免网络阻塞）
 .\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 30
 
 # 3) 运行历史回测并输出绩效报告
@@ -197,24 +194,24 @@ flowchart TD
 # 4) 运行单元测试
 .\.venv\Scripts\python.exe -m pytest tests\unit -q
 
-# 5) 参数自动调优（网格搜索 m/c/h/k/z/y）
-.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py
+# 5) 参数自动调优（建议先小样本 + 单进程，避免长时间占用）
+.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --max-cases 50 --workers 1
 
-# 5.1) 参数自动调优（限量跑 50 组，便于预估耗时）
-.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --max-cases 50
+# 5.1) 参数自动调优（双组全量网格，耗时较长）
+.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py
 
 # 6) 参数自动调优并写回配置
 .\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --apply
 
-# 7) 参数自动调优并限量且写回配置
-.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --max-cases 120 --apply
+# 7) 参数自动调优并限量且写回配置（推荐）
+.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --max-cases 120 --workers 1 --apply
 ```
 
 运行结果说明：
-- 独立荐股输出：`recommend_one.py` 优先从离线候选池读取候选，经过聚类去重与帕累托过滤后仅输出 1 个推荐代码（若无候选则输出 `NONE`），并自动追加到 `datas/recommend/荐股.txt`
+- 独立荐股输出：`recommend_one.py` 优先从离线候选池读取候选，经过聚类去重与帕累托过滤后仅输出 1 个推荐代码（若无候选则输出 `NONE`）；建议始终传 `--timeout`。仅当有有效推荐代码时才会追加到 `datas/recommend/荐股.txt`
 - 建议输出：`signal_generator.py` 输出持仓交易建议
 - 回测输出：结束日自动取最近交易日；除组合总指标外，还会输出每个代码的单标的收益率/夏普，以及按组合成交记录统计的分代码胜率（赢/平仓）与已实现盈亏
-- 调优输出：默认会分别对 `exchange` 与 `fund_open` 两组跑完整网格；可用 `--max-cases` 限制每组运行组数，先估时再全量执行；`--apply` 会分组写回配置
+- 调优输出：默认会分别对 `exchange` 与 `fund_open` 两组跑完整网格；可用 `--max-cases` 限制每组运行组数、`--workers` 控制并发（Windows 建议先用 `--workers 1`）；`--apply` 会分组写回配置
 
 # 合规要点
 
@@ -267,14 +264,22 @@ get_latest_trade_date(ref_date=None) -> str
 build_all_features(df) -> DataFrame  # 追加所有因子列
 
 # 策略层
-LivermoreStrategy().generate_signals(portfolio, prices, confidence_scores) -> list[dict]
-get_latest_signals(portfolio, start_date, symbols=None, signal_date=None, market_scan=False) -> list[dict]
+LivermoreStrategy().generate_signals(portfolio, prices, confidence_scores, asset_types=None) -> list[dict]
+get_latest_signals(portfolio, start_date, symbols=None, signal_date=None) -> list[dict]
 
 # 市场扫描层
-recommend_best_candidate(exclude_symbols=None, etf_top_n=8, stock_top_n=8, eval_days=365) -> dict | None
+recommend_best_candidate(exclude_symbols=None, etf_top_n=8, stock_top_n=8, fund_top_n=16, eval_days=365, strategy_params=None, risk_free_rate=0.02, disable_proxy=False) -> dict | None
 
 # 回测层
-run_backtest(symbols, capital, start_date, end_date) -> {
+prepare_backtest_context(symbols, start_date, end_date, asset_meta_override=None) -> dict
+
+run_backtest_from_prepared(prepared_context, capital, risk_free_rate=0.02, strategy_params=None) -> {
+    "equity_curve": pd.Series,
+    "metrics": dict,
+    "trade_log": list[dict],
+}
+
+run_backtest(symbols, capital, start_date, end_date, risk_free_rate=0.02, strategy_params=None, asset_meta_override=None) -> {
     "equity_curve": pd.Series,        # 每日净值曲线
     "metrics": {                       # 绩效指标
         "total_return": float,

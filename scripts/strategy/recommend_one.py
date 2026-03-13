@@ -66,7 +66,7 @@ def _recommend_worker(
 
 
 def _append_recommend_record(symbol: str) -> None:
-    """将荐股结果追加写入 datas/recommend/荐股.txt。"""
+    """将有效荐股结果追加写入 datas/recommend/荐股.txt。"""
     os.makedirs(_RECOMMEND_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(_RECOMMEND_FILE, "a", encoding="utf-8") as f:
@@ -141,13 +141,12 @@ def main() -> None:
     process.join(timeout=1)
     parent_conn.close()
 
-    # 按用户要求：只输出一个代码；无结果输出 NONE
+    # 仅在有有效推荐代码时写入文件；无结果仅输出 NONE，不落盘
     if best and best.get("symbol"):
         symbol = str(best["symbol"])
         _append_recommend_record(symbol)
         print(symbol)
     else:
-        _append_recommend_record("NONE")
         print("NONE")
 
 
