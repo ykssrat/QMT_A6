@@ -186,6 +186,11 @@ def get_latest_signals(
         return []
 
     features_map = prepare_features(symbols, start_date, signal_date)
+    asset_meta = build_asset_metadata()
+    asset_types = {
+        sym: str((asset_meta.get(sym) or {}).get("asset_type", "stock"))
+        for sym in features_map.keys()
+    }
 
     # 提取信号日当天的最新价格与信心因子
     prices: dict[str, float] = {}
@@ -205,7 +210,7 @@ def get_latest_signals(
             confidence_scores[sym] = 0.0
 
     strategy = LivermoreStrategy()
-    signals = strategy.generate_signals(portfolio, prices, confidence_scores)
+    signals = strategy.generate_signals(portfolio, prices, confidence_scores, asset_types=asset_types)
 
     _print_signals(signals, signal_date)
     return signals

@@ -100,13 +100,98 @@ class LivermoreStrategy:
         cfg = _load_config()
         params = params or {}
         lv = cfg["livermore"]
-        self.m: float = float(params.get("m", lv["m"]))         # 建仓比例
-        self.c: float = float(params.get("c", lv["c"]))         # 止损/回调阈值
-        self.h: float = float(params.get("h", lv["h"]))         # 加仓解锁阈值
-        self.k: float = float(params.get("k", lv["k"]))         # 加仓系数
+        self.m: float = float(params.get("m", lv["m"]))         # 兼容默认建仓比例
+        self.c: float = float(params.get("c", lv["c"]))         # 兼容默认止损/回调阈值
+        self.h: float = float(params.get("h", lv["h"]))         # 兼容默认加仓解锁阈值
+        self.k: float = float(params.get("k", lv["k"]))         # 兼容默认加仓系数
         self.z_threshold: float = float(params.get("z_threshold", cfg["signal"]["confidence_threshold"]))
         self.y_threshold: float = float(params.get("y_threshold", lv.get("y_threshold", 0.55)))
         self.max_positions: int = int(params.get("max_positions", cfg["capital"]["max_position_count"]))
+
+        # 按资产类型参数（场内/场外两套），缺失时回退到默认参数，兼容旧配置
+        lv_asset_params = (lv.get("asset_params") or {})
+        signal_asset_params = (cfg.get("signal", {}).get("asset_params") or {})
+        param_asset_params = (params.get("asset_params") or {})
+
+        self.asset_params: dict[str, dict[str, float]] = {
+            "exchange": {
+                "m": float(
+                    param_asset_params.get("exchange", {}).get(
+                        "m", lv_asset_params.get("exchange", {}).get("m", self.m)
+                    )
+                ),
+                "c": float(
+                    param_asset_params.get("exchange", {}).get(
+                        "c", lv_asset_params.get("exchange", {}).get("c", self.c)
+                    )
+                ),
+                "h": float(
+                    param_asset_params.get("exchange", {}).get(
+                        "h", lv_asset_params.get("exchange", {}).get("h", self.h)
+                    )
+                ),
+                "k": float(
+                    param_asset_params.get("exchange", {}).get(
+                        "k", lv_asset_params.get("exchange", {}).get("k", self.k)
+                    )
+                ),
+                "y_threshold": float(
+                    param_asset_params.get("exchange", {}).get(
+                        "y_threshold", lv_asset_params.get("exchange", {}).get("y_threshold", self.y_threshold)
+                    )
+                ),
+                "z_threshold": float(
+                    param_asset_params.get("exchange", {}).get(
+                        "z_threshold",
+                        signal_asset_params.get("exchange", {}).get("confidence_threshold", self.z_threshold),
+                    )
+                ),
+            },
+            "fund_open": {
+                "m": float(
+                    param_asset_params.get("fund_open", {}).get(
+                        "m", lv_asset_params.get("fund_open", {}).get("m", self.m)
+                    )
+                ),
+                "c": float(
+                    param_asset_params.get("fund_open", {}).get(
+                        "c", lv_asset_params.get("fund_open", {}).get("c", self.c)
+                    )
+                ),
+                "h": float(
+                    param_asset_params.get("fund_open", {}).get(
+                        "h", lv_asset_params.get("fund_open", {}).get("h", self.h)
+                    )
+                ),
+                "k": float(
+                    param_asset_params.get("fund_open", {}).get(
+                        "k", lv_asset_params.get("fund_open", {}).get("k", self.k)
+                    )
+                ),
+                "y_threshold": float(
+                    param_asset_params.get("fund_open", {}).get(
+                        "y_threshold", lv_asset_params.get("fund_open", {}).get("y_threshold", self.y_threshold)
+                    )
+                ),
+                "z_threshold": float(
+                    param_asset_params.get("fund_open", {}).get(
+                        "z_threshold",
+                        signal_asset_params.get("fund_open", {}).get("confidence_threshold", self.z_threshold),
+                    )
+                ),
+            },
+        }
+
+    def _asset_group(self, asset_type: str | None) -> str:
+        """将资产类型映射为参数组。"""
+        if asset_type == "fund_open":
+            return "fund_open"
+        return "exchange"
+
+    def _param_for_symbol(self, symbol: str, asset_types: dict[str, str], key: str) -> float:
+        """获取单标的参数值。"""
+        group = self._asset_group(asset_types.get(symbol))
+        return float(self.asset_params[group][key])
 
     # ────────────── 对外主接口 ──────────────
 
@@ -115,6 +200,7 @@ class LivermoreStrategy:
         portfolio: Portfolio,
         prices: dict[str, float],
         confidence_scores: dict[str, float],
+        asset_types: dict[str, str] | None = None,
     ) -> list[dict]:
         """
         根据当前组合状态、最新价格和信心因子，生成交易信号列表。
@@ -134,7 +220,22 @@ class LivermoreStrategy:
         signals: list[dict] = []
         planned_sell_symbols: set[str] = set()
         position_state: dict[str, tuple[Position, float, float, float]] = {}
-        market_y = self._compute_market_y(confidence_scores)
+        asset_types = asset_types or {}
+
+        market_y_by_group = {
+            "exchange": self._compute_market_y(
+                confidence_scores=confidence_scores,
+                z_threshold=float(self.asset_params["exchange"]["z_threshold"]),
+                include_groups={"exchange"},
+                asset_types=asset_types,
+            ),
+            "fund_open": self._compute_market_y(
+                confidence_scores=confidence_scores,
+                z_threshold=float(self.asset_params["fund_open"]["z_threshold"]),
+                include_groups={"fund_open"},
+                asset_types=asset_types,
+            ),
+        }
 
         # 1. 先统一更新峰值，并预先标记止损持仓，避免同一标的被 Y 因子与止损重复卖出
         for sym, pos in list(portfolio.positions.items()):
@@ -146,12 +247,13 @@ class LivermoreStrategy:
             profit = pos.profit_rate(price)
             drawdown = pos.drawdown_from_peak(price)
             position_state[sym] = (pos, price, profit, drawdown)
+            c_for_symbol = self._param_for_symbol(sym, asset_types, "c")
 
-            if profit <= (-self.c + 1e-12):
+            if profit <= (-c_for_symbol + 1e-12):
                 signals.append({
                     "symbol": sym,
                     "action": "sell",
-                    "reason": f"止损：亏损率 {profit:.2%} >= {self.c:.2%}",
+                    "reason": f"止损：亏损率 {profit:.2%} >= {c_for_symbol:.2%}",
                     "amount": pos.market_value,
                 })
                 planned_sell_symbols.add(sym)
@@ -161,15 +263,22 @@ class LivermoreStrategy:
             if sym in planned_sell_symbols:
                 continue
 
+            h_for_symbol = self._param_for_symbol(sym, asset_types, "h")
+            c_for_symbol = self._param_for_symbol(sym, asset_types, "c")
+            k_for_symbol = self._param_for_symbol(sym, asset_types, "k")
+            group = self._asset_group(asset_types.get(sym))
+            y_for_group = market_y_by_group[group]
+            y_threshold_for_symbol = self._param_for_symbol(sym, asset_types, "y_threshold")
+
             # ── 解锁加仓 ──
             was_unlocked = pos.add_unlocked
-            if profit >= self.h:
+            if profit >= h_for_symbol:
                 pos.add_unlocked = True
 
             # ── 加仓 ──
             # 仅当此前已经解锁时执行加仓，避免同一根K线“刚解锁就立刻加仓”
-            if was_unlocked and drawdown <= self.c:
-                add_ratio = self.k * profit
+            if was_unlocked and drawdown <= c_for_symbol:
+                add_ratio = k_for_symbol * profit
                 add_amount = portfolio.total_assets * add_ratio
 
                 # Y 因子资金决策：
@@ -180,7 +289,8 @@ class LivermoreStrategy:
                     cash=portfolio.cash,
                     portfolio=portfolio,
                     prices=prices,
-                    market_y=market_y,
+                    market_y=y_for_group,
+                    y_threshold=y_threshold_for_symbol,
                     excluded_symbols=planned_sell_symbols | {sym},
                 )
 
@@ -196,7 +306,7 @@ class LivermoreStrategy:
                     "action": "add",
                     "reason": (
                         f"盈利加仓：盈利率 {profit:.2%}，回调 {drawdown:.2%}，加仓比 {add_ratio:.2%}，"
-                        f"Y={market_y:.2f}（阈值 {self.y_threshold:.2f}）"
+                        f"Y={y_for_group:.2f}（阈值 {y_threshold_for_symbol:.2f}）"
                     ),
                     "amount": planned_amount,
                 })
@@ -209,16 +319,23 @@ class LivermoreStrategy:
                 continue
             if len(portfolio.positions) >= self.max_positions:
                 break
-            if z < self.z_threshold:
+            z_for_symbol = self._param_for_symbol(sym, asset_types, "z_threshold")
+            m_for_symbol = self._param_for_symbol(sym, asset_types, "m")
+            y_threshold_for_symbol = self._param_for_symbol(sym, asset_types, "y_threshold")
+            group = self._asset_group(asset_types.get(sym))
+            y_for_group = market_y_by_group[group]
+
+            if z < z_for_symbol:
                 continue
 
-            build_amount = portfolio.total_assets * self.m
+            build_amount = portfolio.total_assets * m_for_symbol
             planned_amount, y_signals = self._plan_amount_with_y_factor(
                 target_amount=build_amount,
                 cash=portfolio.cash,
                 portfolio=portfolio,
                 prices=prices,
-                market_y=market_y,
+                market_y=y_for_group,
+                y_threshold=y_threshold_for_symbol,
                 excluded_symbols=planned_sell_symbols,
             )
 
@@ -233,8 +350,8 @@ class LivermoreStrategy:
                 "symbol": sym,
                 "action": "buy",
                 "reason": (
-                    f"建仓：信心因子 Z={z:.2f} >= 阈值 {self.z_threshold}，"
-                    f"Y={market_y:.2f}（阈值 {self.y_threshold:.2f}）"
+                    f"建仓：信心因子 Z={z:.2f} >= 阈值 {z_for_symbol:.2f}，"
+                    f"Y={y_for_group:.2f}（阈值 {y_threshold_for_symbol:.2f}）"
                 ),
                 "amount": planned_amount,
             })
@@ -243,7 +360,13 @@ class LivermoreStrategy:
 
     # ────────────── 内部方法 ──────────────
 
-    def _compute_market_y(self, confidence_scores: dict[str, float]) -> float:
+    def _compute_market_y(
+        self,
+        confidence_scores: dict[str, float],
+        z_threshold: float,
+        include_groups: set[str],
+        asset_types: dict[str, str],
+    ) -> float:
         """
         基于市场信号（confidence_z）合成 Y 因子，范围约为 [0, 1]。
 
@@ -254,8 +377,15 @@ class LivermoreStrategy:
         if not confidence_scores:
             return 0.0
 
-        values = list(confidence_scores.values())
-        transformed = [1.0 / (1.0 + math.exp(-(z - self.z_threshold))) for z in values]
+        values = [
+            z
+            for sym, z in confidence_scores.items()
+            if self._asset_group(asset_types.get(sym)) in include_groups
+        ]
+        if not values:
+            return 0.0
+
+        transformed = [1.0 / (1.0 + math.exp(-(z - z_threshold))) for z in values]
         return float(sum(transformed) / len(transformed))
 
     def _plan_amount_with_y_factor(
@@ -265,6 +395,7 @@ class LivermoreStrategy:
         portfolio: Portfolio,
         prices: dict[str, float],
         market_y: float,
+        y_threshold: float,
         excluded_symbols: set[str] | None = None,
     ) -> tuple[float, list[dict]]:
         """
@@ -281,7 +412,7 @@ class LivermoreStrategy:
         if target_amount <= cash:
             return target_amount, []
 
-        if market_y >= self.y_threshold:
+        if market_y >= y_threshold:
             y_signals = self._y_factor_rotate_one(
                 portfolio=portfolio,
                 prices=prices,

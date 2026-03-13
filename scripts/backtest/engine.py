@@ -171,6 +171,153 @@ def calc_metrics(equity: pd.Series, risk_free_rate: float = 0.02, trade_log: lis
 
 # ────────────────── 主接口 ──────────────────
 
+def prepare_backtest_context(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    asset_meta_override: dict[str, dict] | None = None,
+) -> dict:
+    """预加载回测所需的交易日与特征数据，供多次参数评估复用。"""
+    if not symbols:
+        raise ValueError("symbols 不能为空")
+
+    trade_dates = fetch_trade_calendar(start_date, end_date)
+    if not trade_dates:
+        raise ValueError(f"日期范围 {start_date} ~ {end_date} 内无可用交易日")
+
+    all_dates = fetch_trade_calendar("2010-01-01", end_date)
+    backtest_idx = len(all_dates) - len(trade_dates)
+    warmup_start = all_dates[max(0, backtest_idx - 80)]
+
+    asset_meta = build_asset_metadata(extra_meta=asset_meta_override)
+    warmup_trade_dates = fetch_trade_calendar(warmup_start, end_date)
+    features_map: dict[str, pd.DataFrame] = {}
+    market_data: dict[str, dict[str, np.ndarray]] = {}
+    asset_types: dict[str, str] = {}
+    for sym in symbols:
+        logger.info("准备特征数据：%s", sym)
+        cleaned = fetch_asset_history(
+            symbol=sym,
+            start_date=warmup_start,
+            end_date=end_date,
+            trade_dates=warmup_trade_dates,
+            asset_meta=asset_meta,
+        )
+        if cleaned is None:
+            logger.warning("标的 %s 数据不足，已跳过", sym)
+            continue
+        features = build_all_features(cleaned)
+        features_map[sym] = features
+        asset_types[sym] = str((asset_meta.get(sym) or {}).get("asset_type", "stock"))
+
+        aligned = features.reindex(pd.DatetimeIndex(trade_dates))
+        close_series = pd.to_numeric(aligned["close"], errors="coerce")
+        if "confidence_z" in aligned.columns:
+            confidence_series = pd.to_numeric(aligned["confidence_z"], errors="coerce").fillna(0.0)
+        else:
+            confidence_series = pd.Series(0.0, index=aligned.index, dtype=float)
+        market_data[sym] = {
+            "close": close_series.to_numpy(dtype=float),
+            "confidence_z": confidence_series.to_numpy(dtype=float),
+            "valid_mask": (~close_series.isna()).to_numpy(dtype=bool),
+        }
+
+    if not features_map:
+        raise ValueError("没有可用的标的数据，请检查 symbols 和日期范围")
+
+    return {
+        "symbols": list(features_map.keys()),
+        "trade_dates": trade_dates,
+        "features_map": features_map,
+        "market_data": market_data,
+        "asset_types": asset_types,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+
+
+def run_backtest_from_prepared(
+    prepared_context: dict,
+    capital: float,
+    risk_free_rate: float = 0.02,
+    strategy_params: dict | None = None,
+) -> dict:
+    """基于预加载的上下文执行回测，避免重复数据准备。"""
+    if capital <= 0:
+        raise ValueError("capital 必须大于 0")
+
+    trade_dates = prepared_context.get("trade_dates") or []
+    market_data = prepared_context.get("market_data") or {}
+    asset_types = prepared_context.get("asset_types") or {}
+    symbols = prepared_context.get("symbols") or []
+    start_date = prepared_context.get("start_date", "")
+    end_date = prepared_context.get("end_date", "")
+
+    if not trade_dates:
+        raise ValueError("prepared_context 缺少 trade_dates")
+    if not market_data or not symbols:
+        raise ValueError("prepared_context 缺少 market_data")
+
+    portfolio = Portfolio(cash=capital)
+    strategy = LivermoreStrategy(params=strategy_params)
+    equity_list: list[tuple] = []
+    all_trades: list[dict] = []
+
+    for idx, date_str in enumerate(trade_dates):
+        date = pd.Timestamp(date_str)
+
+        prices: dict[str, float] = {}
+        confidence: dict[str, float] = {}
+        for sym in symbols:
+            symbol_market_data = market_data.get(sym)
+            if not symbol_market_data or not bool(symbol_market_data["valid_mask"][idx]):
+                continue
+            prices[sym] = float(symbol_market_data["close"][idx])
+            confidence[sym] = float(symbol_market_data["confidence_z"][idx])
+
+        if not prices:
+            nav = portfolio.cash + sum(
+                p.shares * p.cost_price for p in portfolio.positions.values()
+            )
+            equity_list.append((date, nav))
+            continue
+
+        signals = strategy.generate_signals(portfolio, prices, confidence, asset_types=asset_types)
+        if signals:
+            day_trades = execute_signals(signals, portfolio, prices)
+            for t in day_trades:
+                t["date"] = date_str
+            all_trades.extend(day_trades)
+
+        nav = portfolio.cash + sum(
+            pos.shares * prices.get(sym, pos.cost_price)
+            for sym, pos in portfolio.positions.items()
+        )
+        equity_list.append((date, nav))
+
+    equity_curve = pd.Series(
+        {d: v for d, v in equity_list},
+        name="equity",
+        dtype=float,
+    )
+    equity_curve.index = pd.DatetimeIndex(equity_curve.index)
+
+    metrics = calc_metrics(equity_curve, risk_free_rate=risk_free_rate, trade_log=all_trades)
+    logger.info(
+        "回测完成 %s ~ %s | 收益率 %.2f%% | 夏普 %.2f | 最大回撤 %.2f%%",
+        start_date,
+        end_date,
+        metrics.get("total_return", 0) * 100,
+        metrics.get("sharpe_ratio", 0),
+        metrics.get("max_drawdown", 0) * 100,
+    )
+
+    return {
+        "equity_curve": equity_curve,
+        "metrics": metrics,
+        "trade_log": all_trades,
+    }
+
 def run_backtest(
     symbols: list[str],
     capital: float,
@@ -204,101 +351,18 @@ def run_backtest(
     if capital <= 0:
         raise ValueError("capital 必须大于 0")
 
-    # ── 1. 拉取并预处理特征数据（含预热期） ──
-    trade_dates = fetch_trade_calendar(start_date, end_date)
-    if not trade_dates:
-        raise ValueError(f"日期范围 {start_date} ~ {end_date} 内无可用交易日")
-
-    # 因子计算最少需要 80 个交易日预热
-    all_dates     = fetch_trade_calendar("2010-01-01", end_date)
-    backtest_idx  = len(all_dates) - len(trade_dates)
-    warmup_start  = all_dates[max(0, backtest_idx - 80)]
-
-    asset_meta = build_asset_metadata(extra_meta=asset_meta_override)
-    warmup_trade_dates = fetch_trade_calendar(warmup_start, end_date)
-    features_map: dict[str, pd.DataFrame] = {}
-    for sym in symbols:
-        logger.info("准备特征数据：%s", sym)
-        cleaned = fetch_asset_history(
-            symbol=sym,
-            start_date=warmup_start,
-            end_date=end_date,
-            trade_dates=warmup_trade_dates,
-            asset_meta=asset_meta,
-        )
-        if cleaned is None:
-            logger.warning("标的 %s 数据不足，已跳过", sym)
-            continue
-        features_map[sym] = build_all_features(cleaned)
-
-    if not features_map:
-        raise ValueError("没有可用的标的数据，请检查 symbols 和日期范围")
-
-    # ── 2. 初始化组合与策略 ──
-    portfolio     = Portfolio(cash=capital)
-    strategy      = LivermoreStrategy(params=strategy_params)
-    equity_list:  list[tuple] = []
-    all_trades:   list[dict]  = []
-
-    # ── 3. 逐日模拟 ──
-    for date_str in trade_dates:
-        date = pd.Timestamp(date_str)
-
-        prices:     dict[str, float] = {}
-        confidence: dict[str, float] = {}
-        for sym, df in features_map.items():
-            if date not in df.index:
-                continue
-            row = df.loc[date]
-            prices[sym] = float(row["close"])
-            z = row.get("confidence_z", float("nan"))
-            confidence[sym] = float(z) if not pd.isna(z) else 0.0
-
-        # 当日无行情时（停牌等），仅记录净值
-        if not prices:
-            nav = portfolio.cash + sum(
-                p.shares * p.cost_price for p in portfolio.positions.values()
-            )
-            equity_list.append((date, nav))
-            continue
-
-        # 生成信号 → 执行交易
-        signals = strategy.generate_signals(portfolio, prices, confidence)
-        if signals:
-            day_trades = execute_signals(signals, portfolio, prices)
-            for t in day_trades:
-                t["date"] = date_str
-            all_trades.extend(day_trades)
-
-        # 记录收盘后总资产
-        nav = portfolio.cash + sum(
-            pos.shares * prices.get(sym, pos.cost_price)
-            for sym, pos in portfolio.positions.items()
-        )
-        equity_list.append((date, nav))
-
-    # ── 4. 汇总结果 ──
-    equity_curve = pd.Series(
-        {d: v for d, v in equity_list},
-        name="equity",
-        dtype=float,
+    prepared_context = prepare_backtest_context(
+        symbols=symbols,
+        start_date=start_date,
+        end_date=end_date,
+        asset_meta_override=asset_meta_override,
     )
-    equity_curve.index = pd.DatetimeIndex(equity_curve.index)
-
-    metrics = calc_metrics(equity_curve, risk_free_rate=risk_free_rate, trade_log=all_trades)
-    logger.info(
-        "回测完成 %s ~ %s | 收益率 %.2f%% | 夏普 %.2f | 最大回撤 %.2f%%",
-        start_date, end_date,
-        metrics.get("total_return", 0) * 100,
-        metrics.get("sharpe_ratio", 0),
-        metrics.get("max_drawdown", 0) * 100,
+    return run_backtest_from_prepared(
+        prepared_context=prepared_context,
+        capital=capital,
+        risk_free_rate=risk_free_rate,
+        strategy_params=strategy_params,
     )
-
-    return {
-        "equity_curve": equity_curve,
-        "metrics":      metrics,
-        "trade_log":    all_trades,
-    }
 
 
 if __name__ == "__main__":

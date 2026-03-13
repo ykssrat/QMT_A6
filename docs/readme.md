@@ -57,15 +57,16 @@ flowchart LR
 
 | 来源 | 说明 | 配置位置 |
 |------|------|----------|
-| 独立荐股候选 | 由独立荐股脚本扫描活跃 ETF + 沪深300 候选，并按利弗莫尔历史表现只输出 1 个代码 | `strategy_config.yaml` → `signal.scan_*` + `scripts/strategy/recommend_one.py` |
+| 独立荐股候选 | 优先读取本地离线候选池（股票/ETF/场外基金），再按高维聚类去同质化 + 帕累托支配过滤（个股）择优，仅输出 1 个代码 | `datas/recommend/candidate_pool.json` + `scripts/strategy/build_candidate_pool.py` + `scripts/strategy/recommend_one.py` |
 | 用户持仓 | 当前实际持有的股票或基金，每日必须纳入计算 | `strategy_config.yaml` → `capital.holdings` |
 | 用户自选 | 手动维护的关注列表，无论是否满足 Z 阈值均参与计算 | `strategy_config.yaml` → `capital.watchlist` |
 
 **配置补充（当前实现）**：
 - `capital.current_positions`：真实持仓明细（成本价、份额、峰值、资产类型）
 - `capital.watchlist_metadata`：自选标的元信息（名称、资产类型），用于识别股票 / ETF / 场外基金
-- `livermore.y_threshold`：Y 因子阈值（决定是否触发转仓卖出）
-- `signal.scan_etf_top_n` / `signal.scan_stock_top_n` / `signal.scan_eval_days`：独立荐股参数
+- `livermore.asset_params.exchange` / `livermore.asset_params.fund_open`：场内与场外两套独立参数（m/c/h/k/y）
+- `signal.asset_params.exchange` / `signal.asset_params.fund_open`：场内与场外两套 Z 阈值
+- `signal.scan_etf_top_n` / `signal.scan_stock_top_n` / `signal.scan_fund_top_n` / `signal.scan_eval_days`：离线候选池择优参数
 
 **基金类型说明**：
 
@@ -96,11 +97,14 @@ flowchart LR
 
 | 参数 | 含义 | 配置键 |
 |------|------|--------|
-| *m* | 初始建仓比例（占总资金） | `livermore.m` |
-| *c* | 止损 / 回调阈值 | `livermore.c` |
-| *h* | 加仓解锁盈利阈值 | `livermore.h` |
-| *k* | 加仓系数，$a = k \times r$ | `livermore.k` |
-| *Z* | 信心因子（多因子合成） | `signal.confidence_threshold` |
+| *m* | 初始建仓比例（占总资金） | `livermore.asset_params.<asset_type>.m` |
+| *c* | 止损 / 回调阈值 | `livermore.asset_params.<asset_type>.c` |
+| *h* | 加仓解锁盈利阈值 | `livermore.asset_params.<asset_type>.h` |
+| *k* | 加仓系数，$a = k \times r$ | `livermore.asset_params.<asset_type>.k` |
+| *y* | Y 因子阈值（是否触发转仓卖出） | `livermore.asset_params.<asset_type>.y_threshold` |
+| *Z* | 信心因子（多因子合成） | `signal.asset_params.<asset_type>.confidence_threshold` |
+
+说明：`<asset_type>` 当前包含 `exchange`（股票/ETF/LOF）与 `fund_open`（场外基金）；兼容旧键 `livermore.m/c/h/k/y_threshold` 与 `signal.confidence_threshold` 作为场内回退值。
 
 **决策流程**：
 
@@ -136,7 +140,8 @@ flowchart TD
 | 胜率 | 回测期间盈利平仓笔数 / 总平仓笔数，$W = N_{win} / N_{total}$ |
 
 **参数优化目标（当前实现）**：
-- 自动调优只优化三项目标：收益率、夏普比率、胜率
+- 自动调优按资产类型分组独立执行（`exchange` 与 `fund_open` 各跑一套 m/c/h/k/z/y）
+- 每组只优化三项目标：收益率、夏普比率、胜率
 - 评分函数：$score = total\_return + sharpe\_ratio + win\_rate$
 
 # 因子体系
@@ -180,7 +185,10 @@ flowchart TD
 # 2.1) 独立荐股（只输出 1 个代码）
 .\.venv\Scripts\python.exe scripts\strategy\recommend_one.py
 
-# 2.2) 独立荐股（设置超时，避免网络阻塞）
+# 2.2) 构建离线候选池（建议每日先执行）
+.\.venv\Scripts\python.exe scripts\strategy\build_candidate_pool.py
+
+# 2.3) 独立荐股（设置超时，避免网络阻塞）
 .\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 30
 
 # 3) 运行历史回测并输出绩效报告
@@ -203,10 +211,10 @@ flowchart TD
 ```
 
 运行结果说明：
-- 独立荐股输出：`recommend_one.py` 仅输出 1 个推荐代码（若无候选则输出 `NONE`），并自动追加到 `datas/recommend/荐股.txt`
+- 独立荐股输出：`recommend_one.py` 优先从离线候选池读取候选，经过聚类去重与帕累托过滤后仅输出 1 个推荐代码（若无候选则输出 `NONE`），并自动追加到 `datas/recommend/荐股.txt`
 - 建议输出：`signal_generator.py` 输出持仓交易建议
 - 回测输出：结束日自动取最近交易日；除组合总指标外，还会输出每个代码的单标的收益率/夏普，以及按组合成交记录统计的分代码胜率（赢/平仓）与已实现盈亏
-- 调优输出：默认会跑完整网格；可用 `--max-cases` 限制运行组数，先估时再全量执行
+- 调优输出：默认会分别对 `exchange` 与 `fund_open` 两组跑完整网格；可用 `--max-cases` 限制每组运行组数，先估时再全量执行；`--apply` 会分组写回配置
 
 # 合规要点
 

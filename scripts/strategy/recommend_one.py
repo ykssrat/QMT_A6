@@ -40,6 +40,7 @@ def _recommend_worker(
     exclude_symbols: set[str],
     etf_top_n: int,
     stock_top_n: int,
+    fund_top_n: int,
     eval_days: int,
     strategy_params: dict,
     risk_free_rate: float,
@@ -51,6 +52,7 @@ def _recommend_worker(
             exclude_symbols=exclude_symbols,
             etf_top_n=etf_top_n,
             stock_top_n=stock_top_n,
+            fund_top_n=fund_top_n,
             eval_days=eval_days,
             strategy_params=strategy_params,
             risk_free_rate=risk_free_rate,
@@ -79,6 +81,7 @@ def main() -> None:
     parser.add_argument("--disable-proxy", action="store_true", default=True, help="执行荐股时临时禁用代理")
     parser.add_argument("--etf-top-n", type=int, default=None, help="ETF 候选数量上限")
     parser.add_argument("--stock-top-n", type=int, default=None, help="个股候选数量上限")
+    parser.add_argument("--fund-top-n", type=int, default=None, help="场外基金候选数量上限")
     parser.add_argument("--eval-days", type=int, default=None, help="候选回测窗口（天）")
     parser.add_argument("--timeout", type=int, default=45, help="荐股总超时时间（秒），超时输出 NONE")
     args = parser.parse_args()
@@ -99,6 +102,7 @@ def main() -> None:
     exclude_symbols = set(resolve_symbol_pool())
     etf_top_n = args.etf_top_n or int(signal_cfg.get("scan_etf_top_n", 8))
     stock_top_n = args.stock_top_n or int(signal_cfg.get("scan_stock_top_n", 8))
+    fund_top_n = args.fund_top_n or int(signal_cfg.get("scan_fund_top_n", etf_top_n))
     eval_days = args.eval_days or int(signal_cfg.get("scan_eval_days", 365))
     risk_free_rate = float(cfg.get("evaluation", {}).get("risk_free_rate", 0.02))
 
@@ -113,6 +117,7 @@ def main() -> None:
             exclude_symbols,
             etf_top_n,
             stock_top_n,
+            fund_top_n,
             eval_days,
             strategy_params,
             risk_free_rate,

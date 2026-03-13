@@ -1,171 +1,136 @@
-# Livermore 策略参数配置
-
-# 通用资金管理参数
 capital:
-  total: 100000              # 初始总资金（元）
-  max_position_count: 20     # 最大同时持仓数量
-  available_cash: 4433.94    # 当前总可用现金（元）= 股票账户 + 场外基金账户
-  stock_available_cash: 265.69
-  fund_available_cash: 4168.25
-
-  # 用户当前持仓标的代码列表（无论 Z 是否达标，每日均参与计算）
+  total: 100000
+  max_position_count: 20
+  available_cash: 13232.65
+  stock_available_cash: 851.29
+  fund_available_cash: 12381.36
   holdings:
-    - "016874"
-    - "011370"
-    - "010770"
-    - "018147"
-    - "025857"
-    - "020105"
-    - "025500"
-    - "018957"
-    - "011036"
-    - "600108"
-    - "159309"
-    - "512760"
-    - "518880"
-    - "512660"
-    - "601179"
-
-  # 用户自选关注列表（无论 Z 是否达标，每日均参与计算）
+  - 016874
+  - '011370'
+  - '010770'
+  - 018147
+  - 025857
+  - '020105'
+  - '025500'
+  - 018957
+  - '016186'
+  - '600108'
+  - '518880'
+  - '601179'
+  - '603156'
   watchlist:
-    - "603156"
-
-  # 自选标的元信息（名称与资产类型，供系统正确识别处理方式）
+  - '603156'
   watchlist_metadata:
-    "603156":
-      name: "养元饮品"
-      asset_type: "stock"
-
-  # 当前实际持仓明细：直接用于生成交易建议
+    '603156':
+      name: 养元饮品
+      asset_type: stock
   current_positions:
-    - symbol: "016874"
-      name: "广发远见智选混合C"
-      asset_type: "fund_open"
-      cost_price: 1.382317
-      shares: 9858.32
-      peak_price: 1.49
-      add_unlocked: false
-    - symbol: "011370"
-      name: "华商均衡成长混合C"
-      asset_type: "fund_open"
-      cost_price: 2.193244
-      shares: 1232.86
-      peak_price: 2.3505
-      add_unlocked: false
-    - symbol: "010770"
-      name: "天弘中证农业主题ETF联接C"
-      asset_type: "fund_open"
-      cost_price: 0.8954
-      shares: 8152.78
-      peak_price: 0.9168
-      add_unlocked: false
-    - symbol: "018147"
-      name: "建信新兴市场优选混合(QDII)C"
-      asset_type: "fund_open"
-      cost_price: 1.6598
-      shares: 209.72
-      peak_price: 1.692
-      add_unlocked: false
-    - symbol: "025857"
-      name: "华夏中证电网设备主题ETF联接C"
-      asset_type: "fund_open"
-      cost_price: 1.412875
-      shares: 5095.90
-      peak_price: 1.4222
-      add_unlocked: false
-    - symbol: "020105"
-      name: "易方达石油化工ETF联接C"
-      asset_type: "fund_open"
-      cost_price: 1.700673
-      shares: 4939.42
-      peak_price: 1.692
-      add_unlocked: false
-    - symbol: "025500"
-      name: "东方阿尔法科技智选混合C"
-      asset_type: "fund_open"
-      cost_price: 1.241947
-      shares: 5877.62
-      peak_price: 1.2299
-      add_unlocked: false
-    - symbol: "018957"
-      name: "中航机遇领航混合C"
-      asset_type: "fund_open"
-      cost_price: 3.7349
-      shares: 1927.81
-      peak_price: 3.6236
-      add_unlocked: false
-    - symbol: "011036"
-      name: "嘉实中证稀土产业ETF联接C"
-      asset_type: "fund_open"
-      cost_price: 1.539132
-      shares: 8092.52
-      peak_price: 1.4474
-      add_unlocked: false
-    - symbol: "600108"
-      name: "亚盛集团"
-      asset_type: "stock"
-      cost_price: 5.995
-      shares: 200
-      peak_price: 6.96
-      add_unlocked: true
-    - symbol: "159309"
-      name: "油气资源ETF"
-      asset_type: "etf"
-      cost_price: 1.925
-      shares: 1700
-      peak_price: 1.626
-      add_unlocked: false
-    - symbol: "512760"
-      name: "芯片ETF"
-      asset_type: "etf"
-      cost_price: 1.845
-      shares: 100
-      peak_price: 1.706
-      add_unlocked: false
-    - symbol: "518880"
-      name: "黄金ETF"
-      asset_type: "etf"
-      cost_price: 11.331
-      shares: 200
-      peak_price: 10.938
-      add_unlocked: false
-    - symbol: "512660"
-      name: "军工ETF"
-      asset_type: "etf"
-      cost_price: 1.572
-      shares: 700
-      peak_price: 1.457
-      add_unlocked: false
-    - symbol: "601179"
-      name: "中国西电"
-      asset_type: "stock"
-      cost_price: 19.810
-      shares: 100
-      peak_price: 18.640
-      add_unlocked: false
-
-# Livermore 核心规则参数
+  - symbol: 016874
+    name: 广发远见智选混合C
+    asset_type: fund_open
+    cost_price: 1.382317
+    shares: 9858.32
+    peak_price: 1.49
+    add_unlocked: false
+  - symbol: '011370'
+    name: 华商均衡成长混合C
+    asset_type: fund_open
+    cost_price: 2.193244
+    shares: 1232.86
+    peak_price: 2.3505
+    add_unlocked: false
+  - symbol: '010770'
+    name: 天弘中证农业主题ETF联接C
+    asset_type: fund_open
+    cost_price: 0.8954
+    shares: 8152.78
+    peak_price: 0.9168
+    add_unlocked: false
+  - symbol: 018147
+    name: 建信新兴市场优选混合(QDII)C
+    asset_type: fund_open
+    cost_price: 1.6598
+    shares: 209.72
+    peak_price: 1.692
+    add_unlocked: false
+  - symbol: 025857
+    name: 华夏中证电网设备主题ETF联接C
+    asset_type: fund_open
+    cost_price: 1.412875
+    shares: 5095.9
+    peak_price: 1.4222
+    add_unlocked: false
+  - symbol: '020105'
+    name: 易方达石油化工ETF联接C
+    asset_type: fund_open
+    cost_price: 1.700673
+    shares: 4939.42
+    peak_price: 1.692
+    add_unlocked: false
+  - symbol: '025500'
+    name: 东方阿尔法科技智选混合C
+    asset_type: fund_open
+    cost_price: 1.241947
+    shares: 5877.62
+    peak_price: 1.2299
+    add_unlocked: false
+  - symbol: 018957
+    name: 中航机遇领航混合C
+    asset_type: fund_open
+    cost_price: 3.7349
+    shares: 1927.81
+    peak_price: 3.6236
+    add_unlocked: false
+  - symbol: '016186'
+    name: 广发电力公用事业ETF联接C
+    asset_type: fund_open
+    cost_price: 1.2354
+    shares: 2833.09
+    peak_price: 1.2354
+    add_unlocked: false
+  - symbol: '600108'
+    name: 亚盛集团
+    asset_type: stock
+    cost_price: 6.3075
+    shares: 400
+    peak_price: 6.96
+    add_unlocked: true
+  - symbol: '518880'
+    name: 黄金ETF
+    asset_type: etf
+    cost_price: 11.331
+    shares: 100
+    peak_price: 10.938
+    add_unlocked: false
+  - symbol: '601179'
+    name: 中国西电
+    asset_type: stock
+    cost_price: 19.81
+    shares: 100
+    peak_price: 18.64
+    add_unlocked: false
+  - symbol: '603156'
+    name: 养元饮品
+    asset_type: stock
+    cost_price: 30.97
+    shares: 100
+    peak_price: 30.97
+    add_unlocked: false
 livermore:
-  m: 0.1                     # 初始建仓比例（占总资金）
-  c: 0.07                    # 止损/止盈回调阈值（亏损或回调超过此比例触发）
-  h: 0.10                    # 盈利加仓解锁阈值（盈利率超过此值后允许加仓）
-  k: 0.5                     # 加仓比例系数，加仓比例 a = k * r（r 为当前盈利率）
-  y_threshold: 0.55          # Y 因子阈值：Y>=阈值时卖出最差持仓转仓，否则仅用现有现金
-
-# 信号过滤参数
+  m: 0.1
+  c: 0.09
+  h: 0.08
+  k: 0.7
+  y_threshold: 0.55
 signal:
-  confidence_threshold: 1.5  # 信心因子 Z 的最低阈值（超过才入场）
-  min_volume_ratio: 0.8      # 最小相对成交量比率（过滤流动性不足的标的）
-  scan_etf_top_n: 8          # 市场优选候选：ETF 扫描数量上限
-  scan_stock_top_n: 8        # 市场优选候选：个股扫描数量上限
-  scan_eval_days: 365        # 市场优选候选回测窗口（天）
-
-# 组合优化参数
+  confidence_threshold: 1.5
+  min_volume_ratio: 0.8
+  scan_etf_top_n: 8
+  scan_stock_top_n: 8
+  scan_eval_days: 365
 portfolio:
-  method: "equal_weight"     # 权重分配方式：equal_weight=等权, risk_parity=风险平价
-  rebalance_freq: "monthly"  # 再平衡频率：daily / weekly / monthly
-
-# 回测评估参数
+  method: equal_weight
+  rebalance_freq: monthly
 evaluation:
-  risk_free_rate: 0.02       # 无风险利率（年化，用于夏普比率计算）
-  benchmark: "000300"        # 基准指数代码（沪深300）
+  risk_free_rate: 0.02
+  benchmark: '000300'

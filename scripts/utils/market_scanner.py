@@ -9,10 +9,14 @@
 import logging
 import os
 import sys
+import json
 from datetime import date, timedelta
 from contextlib import contextmanager
 
+import numpy as np
 import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT_DIR not in sys.path:
@@ -26,6 +30,20 @@ logger = logging.getLogger(__name__)
 # ETF 最低成交额过滤阈值（元），过滤掉流动性极差的标的
 _MIN_ETF_AMOUNT = 5_000_000  # 500 万元
 _DEFAULT_EVAL_CAPITAL = 100000
+_CANDIDATE_POOL_DIR = os.path.join(ROOT_DIR, "datas", "recommend")
+_CANDIDATE_POOL_PATH = os.path.join(_CANDIDATE_POOL_DIR, "candidate_pool.json")
+_CLUSTER_FEATURES = [
+    "total_return",
+    "annual_return",
+    "sharpe_ratio",
+    "annual_vol",
+    "max_drawdown",
+    "win_rate",
+]
+_DEFAULT_CLUSTER_KEEP_PER_CLUSTER = 1
+_DEFAULT_MAX_CLUSTER_COUNT = 6
+_DEFAULT_PARETO_SCORE_EPSILON = 0.05
+_DEFAULT_FUND_TOP_N = 16
 
 
 def _get_active_proxy_env() -> dict[str, str]:
@@ -64,10 +82,176 @@ def _temporary_disable_proxy(disable_proxy: bool):
                 os.environ[k] = backup[k]
 
 
+def _classify_fund_asset_type(symbol: str, fund_name: str, fund_type: str) -> str:
+    """根据基金代码与名称推断资产类型。"""
+    upper_name = str(fund_name or "").upper()
+    upper_type = str(fund_type or "").upper()
+
+    if "LOF" in upper_name or "LOF" in upper_type:
+        return "lof"
+    if "ETF联接" in upper_name or "ETF联接" in upper_type:
+        return "fund_open"
+    if "ETF" in upper_name or "ETF" in upper_type:
+        return "etf"
+    return "fund_open"
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """安全转换浮点数。"""
+    try:
+        converted = pd.to_numeric(value, errors="coerce")
+        if pd.isna(converted):
+            return default
+        return float(converted)
+    except Exception:
+        return default
+
+
+def load_candidate_pool_file() -> list[dict]:
+    """从本地 JSON 文件读取离线候选池。"""
+    if not os.path.exists(_CANDIDATE_POOL_PATH):
+        return []
+    with open(_CANDIDATE_POOL_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, list):
+        return data
+    return []
+
+
+def save_candidate_pool_file(candidates: list[dict]) -> str:
+    """将离线候选池写入本地 JSON 文件。"""
+    os.makedirs(_CANDIDATE_POOL_DIR, exist_ok=True)
+    with open(_CANDIDATE_POOL_PATH, "w", encoding="utf-8") as f:
+        json.dump(candidates, f, ensure_ascii=False, indent=2)
+    return _CANDIDATE_POOL_PATH
+
+
+def build_offline_candidate_pool(disable_proxy: bool = True) -> list[dict]:
+    """构建离线候选池，覆盖股票、ETF/LOF 与场外基金。"""
+    candidates: list[dict] = []
+
+    with _temporary_disable_proxy(disable_proxy=disable_proxy):
+        stock_df = ak.stock_info_a_code_name()
+        for idx, row in stock_df.iterrows():
+            symbol = str(row.get("code", "")).strip()
+            if not symbol:
+                continue
+            candidates.append(
+                {
+                    "symbol": symbol,
+                    "name": str(row.get("name", symbol)),
+                    "asset_type": "stock",
+                    "latest_price": 0.0,
+                    "turnover": 0.0,
+                    "pool_rank": int(idx) + 1,
+                    "source": "stock_info_a_code_name",
+                }
+            )
+
+        fund_df = ak.fund_name_em()
+        fund_rank_df = ak.fund_open_fund_rank_em(symbol="全部")
+        fund_rank_map: dict[str, dict] = {}
+        for _, row in fund_rank_df.iterrows():
+            symbol = str(row.get("基金代码", "")).strip()
+            if not symbol:
+                continue
+            fund_rank_map[symbol] = {
+                "pool_rank": int(_safe_float(row.get("序号"), 999999)),
+                "latest_price": _safe_float(row.get("单位净值")),
+                "rank_score": _safe_float(row.get("自定义")),
+            }
+
+        for idx, row in fund_df.iterrows():
+            symbol = str(row.get("基金代码", "")).strip()
+            if not symbol:
+                continue
+            name = str(row.get("基金简称", symbol))
+            fund_type = str(row.get("基金类型", ""))
+            asset_type = _classify_fund_asset_type(symbol, name, fund_type)
+            rank_meta = fund_rank_map.get(symbol, {})
+            candidates.append(
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "asset_type": asset_type,
+                    "latest_price": float(rank_meta.get("latest_price", 0.0) or 0.0),
+                    "turnover": 0.0,
+                    "pool_rank": int(rank_meta.get("pool_rank", idx + 1)),
+                    "rank_score": float(rank_meta.get("rank_score", 0.0) or 0.0),
+                    "source": "fund_name_em",
+                }
+            )
+
+    dedup: dict[str, dict] = {}
+    for item in candidates:
+        dedup[item["symbol"]] = item
+    result = list(dedup.values())
+    logger.info("离线候选池构建完成：共 %d 只候选", len(result))
+    return result
+
+
+def refresh_candidate_pool(disable_proxy: bool = True) -> str:
+    """构建并保存离线候选池。"""
+    candidates = build_offline_candidate_pool(disable_proxy=disable_proxy)
+    path = save_candidate_pool_file(candidates)
+    logger.info("离线候选池已写入：%s", path)
+    return path
+
+
+def load_market_candidates_from_pool(
+    etf_top_n: int = 30,
+    stock_top_n: int = 20,
+    fund_top_n: int = _DEFAULT_FUND_TOP_N,
+    exclude_symbols: set[str] | None = None,
+) -> dict[str, dict]:
+    """从本地候选池中加载候选并按类型配额筛选。"""
+    exclude = exclude_symbols or set()
+    pool = load_candidate_pool_file()
+    if not pool:
+        logger.warning("离线候选池不存在或为空：%s", _CANDIDATE_POOL_PATH)
+        return {}
+
+    bucketed: dict[str, list[dict]] = {"stock": [], "etf": [], "lof": [], "fund_open": []}
+    for item in pool:
+        symbol = str(item.get("symbol", "")).strip()
+        if not symbol or symbol in exclude:
+            continue
+        asset_type = str(item.get("asset_type", "stock"))
+        bucketed.setdefault(asset_type, []).append(item)
+
+    def _sort_key(item: dict) -> tuple:
+        turnover = _safe_float(item.get("turnover"), 0.0)
+        rank_score = _safe_float(item.get("rank_score"), 0.0)
+        pool_rank = int(item.get("pool_rank", 999999) or 999999)
+        return (-turnover, -rank_score, pool_rank, str(item.get("symbol", "")))
+
+    result: dict[str, dict] = {}
+    for asset_type in bucketed:
+        bucketed[asset_type].sort(key=_sort_key)
+
+    for item in bucketed.get("etf", [])[:etf_top_n]:
+        result[item["symbol"]] = item
+    for item in bucketed.get("lof", [])[:etf_top_n]:
+        result[item["symbol"]] = item
+    for item in bucketed.get("stock", [])[:stock_top_n]:
+        result[item["symbol"]] = item
+    for item in bucketed.get("fund_open", [])[:fund_top_n]:
+        result[item["symbol"]] = item
+
+    logger.info(
+        "离线候选池加载完成：ETF/LOF %d 只 + 个股 %d 只 + 场外基金 %d 只 = 合计 %d 只",
+        min(len(bucketed.get("etf", [])) + len(bucketed.get("lof", [])), etf_top_n * 2),
+        min(len(bucketed.get("stock", [])), stock_top_n),
+        min(len(bucketed.get("fund_open", [])), fund_top_n),
+        len(result),
+    )
+    return result
+
+
 def scan_etf_candidates(
     top_n: int = 30,
     exclude_symbols: set[str] | None = None,
-) -> list[str]:
+) -> dict[str, dict]:
     """
     从场内 ETF 列表中，按当日成交额降序筛选活跃 ETF，返回代码列表。
 
@@ -91,12 +275,20 @@ def scan_etf_candidates(
             df = df[df["成交额"] >= _MIN_ETF_AMOUNT]
             df = df.sort_values("成交额", ascending=False)
 
-        candidates = [
-            str(code)
-            for code in df["代码"].tolist()
-            if str(code) not in exclude
-        ]
-        result = candidates[:top_n]
+        result: dict[str, dict] = {}
+        name_col = "名称" if "名称" in df.columns else None
+        price_col = "最新价" if "最新价" in df.columns else None
+        for _, row in df.iterrows():
+            code = str(row.get("代码", "")).strip()
+            if not code or code in exclude:
+                continue
+            result[code] = {
+                "name": str(row.get(name_col, code)) if name_col else code,
+                "asset_type": "etf",
+                "latest_price": float(pd.to_numeric(row.get(price_col, 0.0), errors="coerce") or 0.0),
+            }
+            if len(result) >= top_n:
+                break
         logger.info("ETF 候选扫描：筛出 %d 只（原始 %d 只，排除 %d 只）", len(result), len(df), len(exclude))
         return result
 
@@ -108,7 +300,7 @@ def scan_etf_candidates(
 def scan_stock_candidates(
     top_n: int = 20,
     exclude_symbols: set[str] | None = None,
-) -> list[str]:
+) -> dict[str, dict]:
     """
     从沪深 300 成分股中，按当日成交额筛选活跃个股，返回代码列表。
 
@@ -143,12 +335,20 @@ def scan_stock_candidates(
             df_spot["成交额"] = pd.to_numeric(df_spot["成交额"], errors="coerce").fillna(0)
             df_spot = df_spot.sort_values("成交额", ascending=False)
 
-        candidates = [
-            str(code)
-            for code in df_spot["代码"].tolist()
-            if str(code) not in exclude
-        ]
-        result = candidates[:top_n]
+        result: dict[str, dict] = {}
+        name_col = "名称" if "名称" in df_spot.columns else None
+        price_col = "最新价" if "最新价" in df_spot.columns else None
+        for _, row in df_spot.iterrows():
+            code = str(row.get("代码", "")).strip()
+            if not code or code in exclude:
+                continue
+            result[code] = {
+                "name": str(row.get(name_col, code)) if name_col else code,
+                "asset_type": "stock",
+                "latest_price": float(pd.to_numeric(row.get(price_col, 0.0), errors="coerce") or 0.0),
+            }
+            if len(result) >= top_n:
+                break
         logger.info("个股候选扫描：筛出 %d 只（沪深 300 共 %d 只）", len(result), len(hs300_codes))
         return result
 
@@ -160,6 +360,7 @@ def scan_stock_candidates(
 def get_market_candidates(
     etf_top_n: int = 30,
     stock_top_n: int = 20,
+    fund_top_n: int = _DEFAULT_FUND_TOP_N,
     exclude_symbols: set[str] | None = None,
 ) -> dict[str, dict]:
     """
@@ -176,24 +377,12 @@ def get_market_candidates(
     返回：
         {symbol: {"name": str, "asset_type": str}} 字典
     """
-    exclude = exclude_symbols or set()
-
-    etf_codes = scan_etf_candidates(top_n=etf_top_n, exclude_symbols=exclude)
-    stock_codes = scan_stock_candidates(top_n=stock_top_n, exclude_symbols=exclude)
-
-    result: dict[str, dict] = {}
-    for code in etf_codes:
-        result[code] = {"name": code, "asset_type": "etf"}
-    for code in stock_codes:
-        result[code] = {"name": code, "asset_type": "stock"}
-
-    logger.info(
-        "市场候选扫描完成：ETF %d 只 + 个股 %d 只 = 合计 %d 只",
-        len(etf_codes),
-        len(stock_codes),
-        len(result),
+    return load_market_candidates_from_pool(
+        etf_top_n=etf_top_n,
+        stock_top_n=stock_top_n,
+        fund_top_n=fund_top_n,
+        exclude_symbols=exclude_symbols,
     )
-    return result
 
 
 def _score_backtest(metrics: dict) -> float:
@@ -209,10 +398,84 @@ def _score_backtest(metrics: dict) -> float:
     return total_return + sharpe + win_rate
 
 
+def _candidate_feature_vector(candidate: dict) -> list[float]:
+    """提取聚类使用的高维特征向量。"""
+    metrics = candidate.get("metrics", {})
+    return [float(metrics.get(key, 0.0)) for key in _CLUSTER_FEATURES]
+
+
+def _cluster_candidates(candidates: list[dict]) -> list[dict]:
+    """对候选做高维聚类，每个簇仅保留评分最高的代表。"""
+    if len(candidates) <= 2:
+        return sorted(candidates, key=lambda item: item["score"], reverse=True)
+
+    cluster_count = max(1, min(_DEFAULT_MAX_CLUSTER_COUNT, int(np.sqrt(len(candidates)))))
+    if cluster_count <= 1:
+        return sorted(candidates, key=lambda item: item["score"], reverse=True)
+
+    feature_matrix = np.array([_candidate_feature_vector(candidate) for candidate in candidates], dtype=float)
+    scaler = StandardScaler()
+    normalized = scaler.fit_transform(feature_matrix)
+
+    model = KMeans(n_clusters=cluster_count, n_init=10, random_state=42)
+    labels = model.fit_predict(normalized)
+
+    best_by_cluster: dict[int, list[dict]] = {}
+    for label, candidate in zip(labels.tolist(), candidates):
+        best_by_cluster.setdefault(label, []).append(candidate)
+
+    clustered: list[dict] = []
+    for label_candidates in best_by_cluster.values():
+        label_candidates.sort(key=lambda item: item["score"], reverse=True)
+        clustered.extend(label_candidates[:_DEFAULT_CLUSTER_KEEP_PER_CLUSTER])
+
+    clustered.sort(key=lambda item: item["score"], reverse=True)
+    logger.info("高维聚类完成：原始 %d 只 -> 聚类代表 %d 只", len(candidates), len(clustered))
+    return clustered
+
+
+def _is_stock_pareto_dominated(candidate: dict, peers: list[dict]) -> bool:
+    """判断个股是否被更低价格且得分不差的同类候选支配。"""
+    if candidate.get("asset_type") != "stock":
+        return False
+
+    candidate_price = float(candidate.get("latest_price", 0.0) or 0.0)
+    candidate_score = float(candidate.get("score", 0.0) or 0.0)
+    if candidate_price <= 0:
+        return False
+
+    for peer in peers:
+        if peer["symbol"] == candidate["symbol"] or peer.get("asset_type") != "stock":
+            continue
+
+        peer_price = float(peer.get("latest_price", 0.0) or 0.0)
+        peer_score = float(peer.get("score", 0.0) or 0.0)
+        if peer_price <= 0:
+            continue
+
+        score_not_worse = peer_score >= candidate_score - _DEFAULT_PARETO_SCORE_EPSILON
+        price_not_higher = peer_price <= candidate_price
+        strictly_better = peer_price < candidate_price or peer_score > candidate_score
+        if score_not_worse and price_not_higher and strictly_better:
+            return True
+
+    return False
+
+
+def _pareto_filter_stocks(candidates: list[dict]) -> list[dict]:
+    """优先移除被帕累托支配的高价个股候选。"""
+    filtered = [candidate for candidate in candidates if not _is_stock_pareto_dominated(candidate, candidates)]
+    if filtered:
+        logger.info("帕累托过滤完成：输入 %d 只 -> 输出 %d 只", len(candidates), len(filtered))
+        return sorted(filtered, key=lambda item: item["score"], reverse=True)
+    return sorted(candidates, key=lambda item: item["score"], reverse=True)
+
+
 def recommend_best_candidate(
     exclude_symbols: set[str] | None = None,
     etf_top_n: int = 8,
     stock_top_n: int = 8,
+    fund_top_n: int = _DEFAULT_FUND_TOP_N,
     eval_days: int = 365,
     strategy_params: dict | None = None,
     risk_free_rate: float = 0.02,
@@ -246,6 +509,7 @@ def recommend_best_candidate(
         universe_meta = get_market_candidates(
             etf_top_n=etf_top_n,
             stock_top_n=stock_top_n,
+            fund_top_n=fund_top_n,
             exclude_symbols=exclude,
         )
         if not universe_meta:
@@ -255,7 +519,7 @@ def recommend_best_candidate(
         end_date = date.today().strftime("%Y-%m-%d")
         start_date = (date.today() - timedelta(days=eval_days)).strftime("%Y-%m-%d")
 
-        best: dict | None = None
+        evaluated_candidates: list[dict] = []
         for symbol, meta in universe_meta.items():
             try:
                 result = run_backtest(
@@ -275,15 +539,23 @@ def recommend_best_candidate(
                 candidate = {
                     "symbol": symbol,
                     "asset_type": meta.get("asset_type", "stock"),
+                    "name": meta.get("name", symbol),
+                    "latest_price": float(meta.get("latest_price", 0.0) or 0.0),
                     "score": score,
                     "metrics": metrics,
                 }
-                if best is None or candidate["score"] > best["score"]:
-                    best = candidate
+                evaluated_candidates.append(candidate)
 
             except Exception as e:
                 logger.warning("市场优选回测失败：%s - %s", symbol, e)
                 continue
+
+        if not evaluated_candidates:
+            best = None
+        else:
+            clustered_candidates = _cluster_candidates(evaluated_candidates)
+            filtered_candidates = _pareto_filter_stocks(clustered_candidates)
+            best = filtered_candidates[0] if filtered_candidates else None
 
     if best:
         logger.info(
