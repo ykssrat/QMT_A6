@@ -67,6 +67,7 @@ flowchart LR
 - `livermore.asset_params.exchange` / `livermore.asset_params.fund_open`：场内与场外两套独立参数（m/c/h/k/y）
 - `signal.asset_params.exchange` / `signal.asset_params.fund_open`：场内与场外两套 Z 阈值
 - `signal.scan_etf_top_n` / `signal.scan_stock_top_n` / `signal.scan_fund_top_n` / `signal.scan_eval_days`：离线候选池择优参数
+- `signal.recommend_exclude_symbols`：独立荐股排除代码列表（如不希望重复推荐某些代码）
 
 **基金类型说明**：
 
@@ -186,7 +187,13 @@ flowchart TD
 .\.venv\Scripts\python.exe scripts\strategy\build_candidate_pool.py
 
 # 2.2) 独立荐股（始终设置超时，避免网络阻塞）
-.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 90
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py
+
+# 2.2.1) 独立荐股（排除指定代码，例如排除 022364）
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --exclude-symbols 022364
+
+# 2.2.2) 独立荐股（仅场内候选：不参与场外基金）
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --fund-top-n 0
 
 # 3) 运行历史回测并输出绩效报告
 .\.venv\Scripts\python.exe scripts\backtest\run_backtest_report.py

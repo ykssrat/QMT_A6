@@ -83,6 +83,7 @@ def main() -> None:
     parser.add_argument("--etf-top-n", type=int, default=None, help="ETF 候选数量上限")
     parser.add_argument("--stock-top-n", type=int, default=None, help="个股候选数量上限")
     parser.add_argument("--fund-top-n", type=int, default=None, help="场外基金候选数量上限")
+    parser.add_argument("--exclude-symbols", default="", help="额外排除代码，逗号分隔，如 022364,159001")
     parser.add_argument("--eval-days", type=int, default=None, help="候选回测窗口（天）")
     parser.add_argument("--timeout", type=int, default=90, help="荐股总超时时间（秒），超时输出 NONE")
     args = parser.parse_args()
@@ -91,16 +92,49 @@ def main() -> None:
     lv_cfg = cfg.get("livermore", {})
     signal_cfg = cfg.get("signal", {})
 
+    lv_asset_params = (lv_cfg.get("asset_params") or {})
+    signal_asset_params = (signal_cfg.get("asset_params") or {})
+    exchange_lv = (lv_asset_params.get("exchange") or {})
+    fund_lv = (lv_asset_params.get("fund_open") or {})
+    exchange_signal = (signal_asset_params.get("exchange") or {})
+    fund_signal = (signal_asset_params.get("fund_open") or {})
+
+    exchange_z = float(exchange_signal.get("confidence_threshold", signal_cfg.get("confidence_threshold", 1.5)))
+    fund_z = float(fund_signal.get("confidence_threshold", exchange_z))
+
     strategy_params = {
-        "m": float(lv_cfg.get("m", 0.1)),
-        "c": float(lv_cfg.get("c", 0.07)),
-        "h": float(lv_cfg.get("h", 0.10)),
-        "k": float(lv_cfg.get("k", 0.5)),
-        "z_threshold": float(signal_cfg.get("confidence_threshold", 1.5)),
-        "y_threshold": float(lv_cfg.get("y_threshold", 0.55)),
+        "m": float(exchange_lv.get("m", lv_cfg.get("m", 0.1))),
+        "c": float(exchange_lv.get("c", lv_cfg.get("c", 0.07))),
+        "h": float(exchange_lv.get("h", lv_cfg.get("h", 0.10))),
+        "k": float(exchange_lv.get("k", lv_cfg.get("k", 0.5))),
+        "z_threshold": exchange_z,
+        "y_threshold": float(exchange_lv.get("y_threshold", lv_cfg.get("y_threshold", 0.55))),
+        "asset_params": {
+            "exchange": {
+                "m": float(exchange_lv.get("m", lv_cfg.get("m", 0.1))),
+                "c": float(exchange_lv.get("c", lv_cfg.get("c", 0.07))),
+                "h": float(exchange_lv.get("h", lv_cfg.get("h", 0.10))),
+                "k": float(exchange_lv.get("k", lv_cfg.get("k", 0.5))),
+                "y_threshold": float(exchange_lv.get("y_threshold", lv_cfg.get("y_threshold", 0.55))),
+                "z_threshold": exchange_z,
+            },
+            "fund_open": {
+                "m": float(fund_lv.get("m", exchange_lv.get("m", lv_cfg.get("m", 0.1)))),
+                "c": float(fund_lv.get("c", exchange_lv.get("c", lv_cfg.get("c", 0.07)))),
+                "h": float(fund_lv.get("h", exchange_lv.get("h", lv_cfg.get("h", 0.10)))),
+                "k": float(fund_lv.get("k", exchange_lv.get("k", lv_cfg.get("k", 0.5)))),
+                "y_threshold": float(fund_lv.get("y_threshold", exchange_lv.get("y_threshold", lv_cfg.get("y_threshold", 0.55)))),
+                "z_threshold": fund_z,
+            },
+        },
     }
 
     exclude_symbols = set(resolve_symbol_pool())
+    config_excludes = signal_cfg.get("recommend_exclude_symbols", [])
+    if isinstance(config_excludes, list):
+        exclude_symbols.update(str(x).strip() for x in config_excludes if str(x).strip())
+    arg_excludes = [x.strip() for x in str(args.exclude_symbols or "").split(",") if x.strip()]
+    exclude_symbols.update(arg_excludes)
     etf_top_n = args.etf_top_n or int(signal_cfg.get("scan_etf_top_n", 8))
     stock_top_n = args.stock_top_n or int(signal_cfg.get("scan_stock_top_n", 8))
     fund_top_n = args.fund_top_n or int(signal_cfg.get("scan_fund_top_n", etf_top_n))

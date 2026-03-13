@@ -152,6 +152,12 @@ def _apply_best_to_config(best_by_group: dict[str, dict]) -> None:
     cfg = _load_yaml(_STRATEGY_CONFIG_PATH)
     cfg.setdefault("livermore", {})
     cfg.setdefault("signal", {})
+
+    # 清理旧版全局键，避免与分组参数并存
+    for key in ("m", "c", "h", "k", "y_threshold"):
+        cfg["livermore"].pop(key, None)
+    cfg["signal"].pop("confidence_threshold", None)
+
     cfg["livermore"].setdefault("asset_params", {})
     cfg["signal"].setdefault("asset_params", {})
 
@@ -160,12 +166,6 @@ def _apply_best_to_config(best_by_group: dict[str, dict]) -> None:
 
     if exchange_best:
         p = exchange_best["params"]
-        cfg["livermore"]["m"] = float(p["m"])
-        cfg["livermore"]["c"] = float(p["c"])
-        cfg["livermore"]["h"] = float(p["h"])
-        cfg["livermore"]["k"] = float(p["k"])
-        cfg["livermore"]["y_threshold"] = float(p["y_threshold"])
-        cfg["signal"]["confidence_threshold"] = float(p["z_threshold"])
         cfg["livermore"]["asset_params"]["exchange"] = {
             "m": float(p["m"]),
             "c": float(p["c"]),
