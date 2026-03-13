@@ -8,6 +8,7 @@
 import argparse
 import itertools
 import logging
+import multiprocessing as mp
 import os
 import sys
 import time
@@ -47,6 +48,92 @@ def _parse_grid(raw: str) -> list[float]:
     return [float(v) for v in values]
 
 
+def _format_eta(seconds: float) -> str:
+    """格式化剩余时间显示。"""
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours > 0:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if minutes > 0:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _build_param_cases(
+    m_grid: list[float],
+    c_grid: list[float],
+    h_grid: list[float],
+    k_grid: list[float],
+    z_grid: list[float],
+    y_grid: list[float],
+    max_cases: int,
+) -> list[dict]:
+    """构造待评估参数组合列表。"""
+    cases: list[dict] = []
+    for idx, (m, c, h, k, z_threshold, y_threshold) in enumerate(
+        itertools.product(m_grid, c_grid, h_grid, k_grid, z_grid, y_grid),
+        start=1,
+    ):
+        if max_cases > 0 and idx > max_cases:
+            break
+        cases.append(
+            {
+                "case_idx": idx,
+                "params": {
+                    "m": m,
+                    "c": c,
+                    "h": h,
+                    "k": k,
+                    "z_threshold": z_threshold,
+                    "y_threshold": y_threshold,
+                },
+            }
+        )
+    return cases
+
+
+def _evaluate_case(task: dict) -> dict:
+    """评估单组参数，供串行与并行两种模式复用。"""
+    logging.disable(logging.CRITICAL)
+    params = task["params"]
+    try:
+        result = run_backtest(
+            symbols=task["symbols"],
+            capital=task["capital"],
+            start_date=task["start_date"],
+            end_date=task["end_date"],
+            risk_free_rate=task["risk_free_rate"],
+            strategy_params=params,
+        )
+        metrics = result.get("metrics", {})
+        return {
+            "case_idx": task["case_idx"],
+            "params": params,
+            "metrics": metrics,
+            "score": _score(metrics),
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "case_idx": task["case_idx"],
+            "params": params,
+            "metrics": {},
+            "score": None,
+            "error": str(exc),
+        }
+
+
+def _resolve_worker_count(requested_workers: int, total_cases: int) -> int:
+    """解析实际并发进程数。"""
+    if total_cases <= 1:
+        return 1
+    if requested_workers > 0:
+        return max(1, min(requested_workers, total_cases))
+    cpu_count = mp.cpu_count() or 1
+    return max(1, min(cpu_count - 1 if cpu_count > 1 else 1, total_cases))
+
+
 def _apply_best_to_config(best_params: dict) -> None:
     """将最优参数写回 strategy_config.yaml。"""
     cfg = _load_yaml(_STRATEGY_CONFIG_PATH)
@@ -66,6 +153,7 @@ def _apply_best_to_config(best_params: dict) -> None:
 
 def main() -> None:
     logging.disable(logging.CRITICAL)
+    mp.freeze_support()
 
     parser = argparse.ArgumentParser(description="Livermore 参数自动调优")
     parser.add_argument("--m-grid", default="0.05,0.08,0.1")
@@ -75,6 +163,7 @@ def main() -> None:
     parser.add_argument("--z-grid", default="1.0,1.3,1.5")
     parser.add_argument("--y-grid", default="0.50,0.55,0.60")
     parser.add_argument("--max-cases", type=int, default=0, help="最多运行多少组参数，0 表示不限制")
+    parser.add_argument("--workers", type=int, default=0, help="并发进程数，0 表示自动选择")
     parser.add_argument("--apply", action="store_true", help="将最优参数写回 strategy_config.yaml")
     args = parser.parse_args()
 
@@ -101,59 +190,76 @@ def main() -> None:
     z_grid = _parse_grid(args.z_grid)
     y_grid = _parse_grid(args.y_grid)
 
-    total_cases = len(m_grid) * len(c_grid) * len(h_grid) * len(k_grid) * len(z_grid) * len(y_grid)
-    if args.max_cases > 0:
-        total_cases = min(total_cases, args.max_cases)
-    print(f"开始调优，共 {total_cases} 组参数...")
+    param_cases = _build_param_cases(
+        m_grid=m_grid,
+        c_grid=c_grid,
+        h_grid=h_grid,
+        k_grid=k_grid,
+        z_grid=z_grid,
+        y_grid=y_grid,
+        max_cases=args.max_cases,
+    )
+    total_cases = len(param_cases)
+    workers = _resolve_worker_count(args.workers, total_cases)
+    print(f"开始调优，共 {total_cases} 组参数，并发进程数 {workers}...")
 
     best = None
-    case_idx = 0
     started_at = time.time()
-
-    for m, c, h, k, z_threshold, y_threshold in itertools.product(
-        m_grid, c_grid, h_grid, k_grid, z_grid, y_grid
-    ):
-        if args.max_cases > 0 and case_idx >= args.max_cases:
-            break
-        case_idx += 1
-        params = {
-            "m": m,
-            "c": c,
-            "h": h,
-            "k": k,
-            "z_threshold": z_threshold,
-            "y_threshold": y_threshold,
+    tasks = [
+        {
+            **case,
+            "symbols": symbols,
+            "capital": capital,
+            "start_date": start_date,
+            "end_date": end_date,
+            "risk_free_rate": risk_free_rate,
         }
-        try:
-            result = run_backtest(
-                symbols=symbols,
-                capital=capital,
-                start_date=start_date,
-                end_date=end_date,
-                risk_free_rate=risk_free_rate,
-                strategy_params=params,
-            )
-            metrics = result.get("metrics", {})
-            score = _score(metrics)
+        for case in param_cases
+    ]
 
-            if best is None or score > best["score"]:
+    if workers == 1:
+        results_iter = map(_evaluate_case, tasks)
+    else:
+        ctx = mp.get_context("spawn")
+        pool = ctx.Pool(processes=workers)
+        results_iter = pool.imap_unordered(_evaluate_case, tasks)
+
+    try:
+        completed = 0
+        for outcome in results_iter:
+            completed += 1
+            elapsed = time.time() - started_at
+            avg_per_case = elapsed / completed
+            remaining = avg_per_case * (total_cases - completed)
+            eta_str = _format_eta(remaining)
+
+            if outcome["error"]:
+                print(
+                    f"[{completed}/{total_cases}] ETA {eta_str}  失败: "
+                    f"params={outcome['params']}, error={outcome['error']}"
+                )
+                continue
+
+            if best is None or outcome["score"] > best["score"]:
                 best = {
-                    "params": params,
-                    "score": score,
-                    "metrics": metrics,
-                    "case_idx": case_idx,
+                    "params": outcome["params"],
+                    "score": outcome["score"],
+                    "metrics": outcome["metrics"],
+                    "case_idx": outcome["case_idx"],
                 }
 
+            metrics = outcome["metrics"]
             print(
-                f"[{case_idx}/{total_cases}] score={score:.4f} "
+                f"[{completed}/{total_cases}] ETA {eta_str}  score={outcome['score']:.4f} "
                 f"ret={metrics.get('total_return', 0.0):.2%} "
                 f"sharpe={metrics.get('sharpe_ratio', 0.0):.3f} "
                 f"win={metrics.get('win_rate', 0.0):.2%} "
-                f"params={params}"
+                f"params={outcome['params']}"
             )
-
-        except Exception as e:
-            print(f"[{case_idx}/{total_cases}] 失败: params={params}, error={e}")
+    finally:
+        if workers > 1:
+            pool.close()
+            pool.join()
 
     if not best:
         raise RuntimeError("调优失败：没有可用结果")
