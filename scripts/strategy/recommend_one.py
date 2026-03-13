@@ -47,6 +47,7 @@ def _recommend_worker(
     disable_proxy: bool,
 ) -> None:
     """子进程执行荐股逻辑，通过 Pipe 返回结果。"""
+    logging.disable(logging.CRITICAL)
     try:
         result = recommend_best_candidate(
             exclude_symbols=exclude_symbols,
@@ -83,7 +84,7 @@ def main() -> None:
     parser.add_argument("--stock-top-n", type=int, default=None, help="个股候选数量上限")
     parser.add_argument("--fund-top-n", type=int, default=None, help="场外基金候选数量上限")
     parser.add_argument("--eval-days", type=int, default=None, help="候选回测窗口（天）")
-    parser.add_argument("--timeout", type=int, default=45, help="荐股总超时时间（秒），超时输出 NONE")
+    parser.add_argument("--timeout", type=int, default=90, help="荐股总超时时间（秒），超时输出 NONE")
     args = parser.parse_args()
 
     cfg = _load_strategy_config()

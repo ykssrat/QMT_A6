@@ -86,13 +86,20 @@ def _classify_fund_asset_type(symbol: str, fund_name: str, fund_type: str) -> st
     """根据基金代码与名称推断资产类型。"""
     upper_name = str(fund_name or "").upper()
     upper_type = str(fund_type or "").upper()
+    merged = f"{upper_name} {upper_type}"
 
-    if "LOF" in upper_name or "LOF" in upper_type:
-        return "lof"
-    if "ETF联接" in upper_name or "ETF联接" in upper_type:
+    # 场外联接基金优先判定，避免误走 ETF 场内行情接口
+    if "联接" in merged:
         return "fund_open"
-    if "ETF" in upper_name or "ETF" in upper_type:
+
+    if "LOF" in merged:
+        return "lof"
+
+    # 仅当明确属于场内语义时判定为 ETF
+    if "ETF" in merged and ("场内" in merged or symbol.startswith(("15", "16", "50", "51", "52", "56", "58"))):
         return "etf"
+
+    # 其余基金默认按场外基金处理
     return "fund_open"
 
 

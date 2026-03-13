@@ -100,17 +100,24 @@ class LivermoreStrategy:
         cfg = _load_config()
         params = params or {}
         lv = cfg["livermore"]
-        self.m: float = float(params.get("m", lv["m"]))         # 兼容默认建仓比例
-        self.c: float = float(params.get("c", lv["c"]))         # 兼容默认止损/回调阈值
-        self.h: float = float(params.get("h", lv["h"]))         # 兼容默认加仓解锁阈值
-        self.k: float = float(params.get("k", lv["k"]))         # 兼容默认加仓系数
-        self.z_threshold: float = float(params.get("z_threshold", cfg["signal"]["confidence_threshold"]))
-        self.y_threshold: float = float(params.get("y_threshold", lv.get("y_threshold", 0.55)))
+        lv_asset_params = (lv.get("asset_params") or {})
+        signal_asset_params = (cfg.get("signal", {}).get("asset_params") or {})
+
+        exchange_lv = (lv_asset_params.get("exchange") or {})
+        exchange_signal = (signal_asset_params.get("exchange") or {})
+
+        # 默认值优先从场内分组读取，再回退到旧键与硬编码常量
+        self.m: float = float(params.get("m", exchange_lv.get("m", lv.get("m", 0.1))))
+        self.c: float = float(params.get("c", exchange_lv.get("c", lv.get("c", 0.07))))
+        self.h: float = float(params.get("h", exchange_lv.get("h", lv.get("h", 0.10))))
+        self.k: float = float(params.get("k", exchange_lv.get("k", lv.get("k", 0.5))))
+        self.z_threshold: float = float(
+            params.get("z_threshold", exchange_signal.get("confidence_threshold", cfg.get("signal", {}).get("confidence_threshold", 1.5)))
+        )
+        self.y_threshold: float = float(params.get("y_threshold", exchange_lv.get("y_threshold", lv.get("y_threshold", 0.55))))
         self.max_positions: int = int(params.get("max_positions", cfg["capital"]["max_position_count"]))
 
         # 按资产类型参数（场内/场外两套），缺失时回退到默认参数，兼容旧配置
-        lv_asset_params = (lv.get("asset_params") or {})
-        signal_asset_params = (cfg.get("signal", {}).get("asset_params") or {})
         param_asset_params = (params.get("asset_params") or {})
 
         self.asset_params: dict[str, dict[str, float]] = {

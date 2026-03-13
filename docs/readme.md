@@ -104,7 +104,7 @@ flowchart LR
 | *y* | Y 因子阈值（是否触发转仓卖出） | `livermore.asset_params.<asset_type>.y_threshold` |
 | *Z* | 信心因子（多因子合成） | `signal.asset_params.<asset_type>.confidence_threshold` |
 
-说明：`<asset_type>` 当前包含 `exchange`（股票/ETF/LOF）与 `fund_open`（场外基金）；兼容旧键 `livermore.m/c/h/k/y_threshold` 与 `signal.confidence_threshold` 作为场内回退值。
+说明：场内场外使用不同的参数配置。`<asset_type>` 当前包含 `exchange`（股票/ETF/LOF）与 `fund_open`（场外基金）；兼容旧键 `livermore.m/c/h/k/y_threshold` 与 `signal.confidence_threshold` 作为场内回退值。
 
 **决策流程**：
 
@@ -186,11 +186,13 @@ flowchart TD
 .\.venv\Scripts\python.exe scripts\strategy\build_candidate_pool.py
 
 # 2.2) 独立荐股（始终设置超时，避免网络阻塞）
-.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 30
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 90
 
 # 3) 运行历史回测并输出绩效报告
 .\.venv\Scripts\python.exe scripts\backtest\run_backtest_report.py
 
+# 3.1) 非静默进度版，只滚动120交易日
+.\.venv\Scripts\python.exe scripts\backtest\run_backtest_report.py --show-progress --show-meta --trials-per-symbol 10 --trial-days 120
 # 4) 运行单元测试
 .\.venv\Scripts\python.exe -m pytest tests\unit -q
 
