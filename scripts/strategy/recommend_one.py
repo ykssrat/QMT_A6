@@ -176,6 +176,7 @@ def main() -> None:
     parser.add_argument("--etf-top-n", type=int, default=None, help="ETF 候选数量上限")
     parser.add_argument("--stock-top-n", type=int, default=None, help="个股候选数量上限")
     parser.add_argument("--fund-top-n", type=int, default=None, help="场外基金候选数量上限")
+    parser.add_argument("--stock-only", action="store_true", help="仅从个股候选中推荐（自动禁用 ETF/LOF/场外基金）")
     parser.add_argument("--exclude-symbols", default="", help="额外排除代码，逗号分隔，如 022364,159001")
     parser.add_argument("--eval-days", type=int, default=None, help="候选回测窗口（天）")
     parser.add_argument("--timeout", type=int, default=90, help="荐股总超时时间（秒），超时输出 NONE")
@@ -227,6 +228,11 @@ def main() -> None:
     etf_top_n = args.etf_top_n if args.etf_top_n is not None else int(signal_cfg.get("scan_etf_top_n", 8))
     stock_top_n = args.stock_top_n if args.stock_top_n is not None else int(signal_cfg.get("scan_stock_top_n", 8))
     fund_top_n = args.fund_top_n if args.fund_top_n is not None else int(signal_cfg.get("scan_fund_top_n", etf_top_n))
+
+    if args.stock_only:
+        etf_top_n = 0
+        fund_top_n = 0
+
     eval_days = args.eval_days if args.eval_days is not None else int(signal_cfg.get("scan_eval_days", 365))
     risk_free_rate = float(cfg.get("evaluation", {}).get("risk_free_rate", 0.02))
     exclude_symbols = _expand_exclude_symbols(exclude_symbols)

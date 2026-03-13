@@ -1,8 +1,8 @@
 capital:
   total: 100000
   max_position_count: 20
-  available_cash: 13232.65
-  stock_available_cash: 851.29
+  available_cash: 15014.65
+  stock_available_cash: 2633.29
   fund_available_cash: 12381.36
   holdings:
   - 016874
@@ -16,7 +16,6 @@ capital:
   - 016186
   - '600108'
   - '518880'
-  - '601179'
   - '603156'
   watchlist:
   - '603156'
@@ -102,13 +101,6 @@ capital:
     shares: 100
     peak_price: 10.938
     add_unlocked: false
-  - symbol: '601179'
-    name: 中国西电
-    asset_type: stock
-    cost_price: 19.81
-    shares: 100
-    peak_price: 18.64
-    add_unlocked: false
   - symbol: '603156'
     name: 养元饮品
     asset_type: stock
@@ -122,7 +114,7 @@ livermore:
       m: 0.05
       c: 0.05
       h: 0.08
-      k: 0.5
+      k: 0.3
     etf:
       m: 0.05
       c: 0.05
@@ -130,9 +122,9 @@ livermore:
       k: 0.3
     fund_open:
       m: 0.05
-      c: 0.05
-      h: 0.1
-      k: 0.3
+      c: 0.07
+      h: 0.08
+      k: 0.7
 signal:
   min_volume_ratio: 0.8
   scan_etf_top_n: 8

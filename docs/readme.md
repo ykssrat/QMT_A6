@@ -64,7 +64,7 @@ flowchart LR
 **配置补充（当前实现）**：
 - `capital.current_positions`：真实持仓明细（成本价、份额、峰值、资产类型）
 - `capital.watchlist_metadata`：自选标的元信息（名称、资产类型），用于识别股票 / ETF / 场外基金
-- `livermore.asset_params.exchange` / `livermore.asset_params.fund_open`：场内与场外两套独立参数（m/c/h/k）
+- `livermore.asset_params.stock` / `livermore.asset_params.etf` / `livermore.asset_params.fund_open`：股票、ETF/LOF、场外基金三套独立参数（m/c/h/k）
 - `signal`：扫描与候选池参数（不再配置手工 Z 阈值）
 - `signal.scan_etf_top_n` / `signal.scan_stock_top_n` / `signal.scan_fund_top_n` / `signal.scan_eval_days`：离线候选池择优参数
 - `signal.recommend_exclude_symbols`：独立荐股排除代码列表（如不希望重复推荐某些代码）
@@ -105,7 +105,7 @@ flowchart LR
 | *Z* | 入场动态阈值（由全市场 `confidence_z` 分位数生成） | 动态计算 |
 | *Y* | 转仓强度因子（由全市场 `confidence_z` 聚合生成） | 动态计算 |
 
-说明：场内场外使用不同的参数配置。`<asset_type>` 当前包含 `exchange`（股票/ETF/LOF）与 `fund_open`（场外基金）。当前版本将调优重点收敛为 `m/c/h/k`，`Z/Y` 不再手工配置阈值，而由市场状态动态生成。
+说明：不同资产类型使用不同的参数配置。`<asset_type>` 当前包含 `stock`（股票）、`etf`（ETF/LOF）与 `fund_open`（场外基金）。当前版本将调优重点收敛为 `m/c/h/k`，`Z/Y` 不再手工配置阈值，而由市场状态动态生成。
 
 **决策流程**：
 
@@ -131,7 +131,6 @@ flowchart TD
 **同日卖出信号去重（当前实现）**：止损优先于 Y 因子卖出；若某标的当日已触发止损，不会再重复生成 Y 因子卖出信号。
 
 **绩效指标**：回测核心关注以下四项指标，基准为沪深 300（000300）。
-**绩效指标**：回测核心关注以下四项指标，基准为沪深 300（000300）。
 
 | 指标 | 定义 |
 |------|------|
@@ -143,11 +142,11 @@ flowchart TD
 补充：若回测区间内没有任何卖出成交，胜率显示为 `N/A`（而不是 0），避免与“有亏损卖出且胜率为 0”混淆。
 
 **参数优化目标（当前实现）**：
-- 自动调优按资产类型分组独立执行（`exchange` 与 `fund_open` 各跑一套 m/c/h/k）
+- 自动调优按资产类型分组独立执行（`stock`、`etf`、`fund_open` 各跑一套 m/c/h/k）
 - 调优窗口固定为短周期：默认 `30,120` 交易日
 - `--apply` 写回参数时优先使用 `120` 日窗口结果
-- 每组只优化三项目标：收益率、夏普比率、胜率
-- 评分函数：$score = total\_return + sharpe\_ratio + win\_rate$
+- 每组只优化一个目标：已实现盈亏（`realized_pnl`）
+- 评分函数：$score = realized\_pnl$
 
 # 因子体系
 
@@ -184,7 +183,7 @@ flowchart TD
 # 快速运行
 
 以下命令均在项目根目录执行（Windows PowerShell）。
-当前保留最小必需命令集合：`1`、`2`、`2.1`、荐股场内、荐股场外、历史回测报告非静默、双组全量参数调优并写回。
+当前保留最小必需命令集合：`1`、`2`、`2.1`、荐股场内、仅个股荐股、荐基场外、历史回测报告非静默、三组全量参数调优并写回。
 
 ```powershell
 # 1) 安装依赖（首次）
@@ -199,10 +198,13 @@ flowchart TD
 # 2.2) 独立荐股（始终设置超时，避免网络阻塞）
 .\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 90
 
-# 2.2.1) 独立荐股（仅场内候选）
+# 2.2.1) 独立荐股（仅场内候选，含 ETF/LOF）
 .\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 90 --fund-top-n 0
 
-# 2.2.2) 独立荐股（仅场外候选）
+# 2.2.1.1) 独立荐股（仅个股，不含 ETF/LOF/场外基金）
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 90 --stock-only
+
+# 2.2.2) 独立荐基（仅场外候选）
 .\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 90 --etf-top-n 0 --stock-top-n 0
 
 # 3) 历史回测报告（非静默进度版，固定最近120交易日）
@@ -211,13 +213,16 @@ flowchart TD
 # 4) 双组全量参数调优并写回（默认窗口 30,120）
 .\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --window-days 30,120 --apply
 
+# 4.1)时间放大到十年 
+.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --window-days 2520 --apply  
 ```
 
 运行结果说明：
 - 独立荐股输出：`recommend_one.py` 优先从离线候选池读取候选，经过聚类去重、基金同类去重（同前5位代码）与帕累托过滤后仅输出 1 个推荐代码（若无候选则输出 `NONE`）；建议始终传 `--timeout`。仅当有有效推荐代码时才会追加到 `datas/recommend/荐股.txt`，格式为按天聚合（如 `2026-03-13：022364、022365`）。独立荐股会自动排除“当日已推荐过”的代码（场内/场外统一生效）
+- 参数语义补充：`--fund-top-n 0` 仅禁用场外基金，不会禁用 LOF；因为 LOF 当前与 ETF 一样归入场内候选。若只想从个股中推荐，请使用 `--stock-only`
 - 建议输出：`signal_generator.py` 输出持仓交易建议
 - 回测输出：结束日自动取最近交易日；历史回测固定在最近 120 个交易日（脚本内硬限制，命令中也建议显式传 `--trial-days 120`）；除组合总指标外，还会输出每个代码的单标的收益率/夏普，以及按组合成交记录统计的分代码胜率（赢/平仓）与已实现盈亏
-- 调优输出：默认会分别对 `exchange` 与 `fund_open` 两组在 `30/120` 交易日窗口进行网格搜索；可用 `--max-cases` 限制每组运行组数、`--workers` 控制并发（Windows 建议先用 `--workers 1`）；`--apply` 优先写回 120 日窗口的分组最优 `m/c/h/k`
+- 调优输出：默认会分别对 `stock`、`etf` 与 `fund_open` 三组在 `30/120` 交易日窗口进行网格搜索；可用 `--max-cases` 限制每组运行组数、`--workers` 控制并发（Windows 建议先用 `--workers 1`）；`--apply` 优先写回 120 日窗口的分组最优 `m/c/h/k`
 
 # 合规要点
 

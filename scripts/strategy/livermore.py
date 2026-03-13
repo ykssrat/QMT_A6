@@ -120,6 +120,18 @@ class LivermoreStrategy:
         param_etf = (param_asset_params.get("etf") or param_exchange)
         param_fund = (param_asset_params.get("fund_open") or {})
 
+        # 兼容调优器传入扁平 m/c/h/k：当未传分组参数时，将其视为全资产统一覆盖。
+        if not param_asset_params and any(k in params for k in ("m", "c", "h", "k")):
+            flat_params = {
+                "m": self.m,
+                "c": self.c,
+                "h": self.h,
+                "k": self.k,
+            }
+            param_stock = {**flat_params, **param_stock}
+            param_etf = {**flat_params, **param_etf}
+            param_fund = {**flat_params, **param_fund}
+
         stock_defaults = {
             "m": float(stock_lv.get("m", self.m)),
             "c": float(stock_lv.get("c", self.c)),
