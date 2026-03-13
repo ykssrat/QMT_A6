@@ -136,20 +136,41 @@ def build_offline_candidate_pool(disable_proxy: bool = True) -> list[dict]:
     candidates: list[dict] = []
 
     with _temporary_disable_proxy(disable_proxy=disable_proxy):
+        stock_spot_map: dict[str, dict] = {}
+        try:
+            stock_spot_df = ak.stock_zh_a_spot_em()
+            if not stock_spot_df.empty and "代码" in stock_spot_df.columns:
+                if "成交额" in stock_spot_df.columns:
+                    stock_spot_df["成交额"] = pd.to_numeric(stock_spot_df["成交额"], errors="coerce").fillna(0.0)
+                    stock_spot_df = stock_spot_df.sort_values("成交额", ascending=False).reset_index(drop=True)
+                for idx, row in stock_spot_df.iterrows():
+                    symbol = str(row.get("代码", "")).strip()
+                    if not symbol:
+                        continue
+                    stock_spot_map[symbol] = {
+                        "name": str(row.get("名称", symbol)).strip() or symbol,
+                        "latest_price": _safe_float(row.get("最新价")),
+                        "turnover": _safe_float(row.get("成交额")),
+                        "pool_rank": idx + 1,
+                    }
+        except Exception as exc:
+            logger.warning("获取 A 股实时行情失败，股票候选将回退到代码表顺序：%s", exc)
+
         stock_df = ak.stock_info_a_code_name()
         for idx, row in stock_df.iterrows():
             symbol = str(row.get("code", "")).strip()
             if not symbol:
                 continue
+            spot_meta = stock_spot_map.get(symbol, {})
             candidates.append(
                 {
                     "symbol": symbol,
-                    "name": str(row.get("name", symbol)),
+                    "name": str(spot_meta.get("name") or row.get("name", symbol)),
                     "asset_type": "stock",
-                    "latest_price": 0.0,
-                    "turnover": 0.0,
-                    "pool_rank": int(idx) + 1,
-                    "source": "stock_info_a_code_name",
+                    "latest_price": float(spot_meta.get("latest_price", 0.0) or 0.0),
+                    "turnover": float(spot_meta.get("turnover", 0.0) or 0.0),
+                    "pool_rank": int(spot_meta.get("pool_rank", idx + 1) or idx + 1),
+                    "source": "stock_zh_a_spot_em" if spot_meta else "stock_info_a_code_name",
                 }
             )
 

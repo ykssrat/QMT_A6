@@ -1,9 +1,9 @@
 capital:
   total: 100000
   max_position_count: 20
-  available_cash: 15014.65
-  stock_available_cash: 2633.29
-  fund_available_cash: 12381.36
+  available_cash: 12036.65
+  stock_available_cash: 0.0
+  fund_available_cash: 12036.65
   holdings:
   - 016874
   - '011370'
@@ -15,6 +15,7 @@ capital:
   - 018957
   - 016186
   - '600108'
+  - '002885'
   - '518880'
   - '603156'
   watchlist:
@@ -94,6 +95,13 @@ capital:
     shares: 400
     peak_price: 6.96
     add_unlocked: true
+  - symbol: '002885'
+    name: 京泉华
+    asset_type: stock
+    cost_price: 29.78
+    shares: 100
+    peak_price: 29.78
+    add_unlocked: false
   - symbol: '518880'
     name: 黄金ETF
     asset_type: etf
@@ -112,19 +120,19 @@ livermore:
   asset_params:
     stock:
       m: 0.05
-      c: 0.05
-      h: 0.08
+      c: 0.07
+      h: 0.12
       k: 0.3
     etf:
       m: 0.05
-      c: 0.05
-      h: 0.08
-      k: 0.3
-    fund_open:
-      m: 0.05
-      c: 0.07
+      c: 0.09
       h: 0.08
       k: 0.7
+    fund_open:
+      m: 0.05
+      c: 0.09
+      h: 0.12
+      k: 0.3
 signal:
   min_volume_ratio: 0.8
   scan_etf_top_n: 8
