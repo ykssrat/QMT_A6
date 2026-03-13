@@ -129,7 +129,7 @@ def calc_metrics(equity: pd.Series, risk_free_rate: float = 0.02, trade_log: lis
         trade_log:       逐笔交易记录（用于计算胜率）
 
     返回：
-        包含 total_return / annual_return / sharpe_ratio / max_drawdown / annual_vol / win_rate 的字典
+        包含 total_return / sharpe_ratio / max_drawdown / win_rate 的字典
     """
     if equity.empty or len(equity) < 2:
         return {}
@@ -139,8 +139,6 @@ def calc_metrics(equity: pd.Series, risk_free_rate: float = 0.02, trade_log: lis
     total_days    = len(equity)
 
     total_return  = float(equity.iloc[-1] / equity.iloc[0]) - 1
-    annual_return = float((1 + total_return) ** (trading_days_per_year / total_days) - 1)
-    annual_vol    = float(daily_returns.std() * np.sqrt(trading_days_per_year))
 
     daily_rf = risk_free_rate / trading_days_per_year
     sharpe   = float(
@@ -152,7 +150,7 @@ def calc_metrics(equity: pd.Series, risk_free_rate: float = 0.02, trade_log: lis
     max_drawdown = float(((equity - rolling_max) / rolling_max).min())
 
     # 胜率：盈利平仓笔数 / 总平仓笔数
-    win_rate = 0.0
+    win_rate = None
     if trade_log:
         sell_records = [t for t in trade_log if t["action"] == "sell"]
         if sell_records:
@@ -161,10 +159,8 @@ def calc_metrics(equity: pd.Series, risk_free_rate: float = 0.02, trade_log: lis
 
     return {
         "total_return":  round(total_return,  4),
-        "annual_return": round(annual_return, 4),
         "sharpe_ratio":  round(sharpe,        4),
         "max_drawdown":  round(max_drawdown,  4),
-        "annual_vol":    round(annual_vol,    4),
         "win_rate":      win_rate,
     }
 
@@ -336,13 +332,13 @@ def run_backtest(
         start_date:     回测开始日期，格式 "YYYY-MM-DD"
         end_date:       回测结束日期，格式 "YYYY-MM-DD"
         risk_free_rate: 年化无风险利率，用于夏普比率计算
-        strategy_params: 可选策略参数覆盖（m/c/h/k/z_threshold/y_threshold/max_positions）
+        strategy_params: 可选策略参数覆盖（m/c/h/k/max_positions）
         asset_meta_override: 可选资产类型覆盖，用于回测候选 ETF/基金等非默认股票标的
 
     返回：
         {
             "equity_curve": pd.Series,   # DatetimeIndex，每日总资产
-            "metrics":      dict,        # total_return / annual_return / sharpe_ratio / max_drawdown / annual_vol / win_rate
+            "metrics":      dict,        # total_return / sharpe_ratio / max_drawdown / win_rate
             "trade_log":    list[dict],  # 逐笔成交记录
         }
     """

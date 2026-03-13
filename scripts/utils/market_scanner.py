@@ -34,9 +34,7 @@ _CANDIDATE_POOL_DIR = os.path.join(ROOT_DIR, "datas", "recommend")
 _CANDIDATE_POOL_PATH = os.path.join(_CANDIDATE_POOL_DIR, "candidate_pool.json")
 _CLUSTER_FEATURES = [
     "total_return",
-    "annual_return",
     "sharpe_ratio",
-    "annual_vol",
     "max_drawdown",
     "win_rate",
 ]
@@ -401,14 +399,19 @@ def _score_backtest(metrics: dict) -> float:
     """
     total_return = float(metrics.get("total_return", 0.0))
     sharpe = float(metrics.get("sharpe_ratio", 0.0))
-    win_rate = float(metrics.get("win_rate", 0.0))
+    raw_win_rate = metrics.get("win_rate", 0.0)
+    win_rate = float(raw_win_rate) if raw_win_rate is not None else 0.0
     return total_return + sharpe + win_rate
 
 
 def _candidate_feature_vector(candidate: dict) -> list[float]:
     """提取聚类使用的高维特征向量。"""
     metrics = candidate.get("metrics", {})
-    return [float(metrics.get(key, 0.0)) for key in _CLUSTER_FEATURES]
+    values: list[float] = []
+    for key in _CLUSTER_FEATURES:
+        raw = metrics.get(key, 0.0)
+        values.append(float(raw) if raw is not None else 0.0)
+    return values
 
 
 def _cluster_candidates(candidates: list[dict]) -> list[dict]:
@@ -476,6 +479,28 @@ def _pareto_filter_stocks(candidates: list[dict]) -> list[dict]:
         logger.info("帕累托过滤完成：输入 %d 只 -> 输出 %d 只", len(candidates), len(filtered))
         return sorted(filtered, key=lambda item: item["score"], reverse=True)
     return sorted(candidates, key=lambda item: item["score"], reverse=True)
+
+
+def _dedupe_fund_share_classes(candidates: list[dict]) -> list[dict]:
+    """场外基金同前5位代码视为同组，仅保留评分最高者。"""
+    best_by_group: dict[str, dict] = {}
+    remained: list[dict] = []
+
+    for candidate in candidates:
+        symbol = str(candidate.get("symbol", ""))
+        if candidate.get("asset_type") != "fund_open" or not symbol.isdigit() or len(symbol) != 6:
+            remained.append(candidate)
+            continue
+
+        group_key = symbol[:5]
+        current = best_by_group.get(group_key)
+        if current is None or float(candidate.get("score", 0.0)) > float(current.get("score", 0.0)):
+            best_by_group[group_key] = candidate
+
+    deduped = remained + list(best_by_group.values())
+    deduped.sort(key=lambda item: item["score"], reverse=True)
+    logger.info("基金同类去重完成：输入 %d 只 -> 输出 %d 只", len(candidates), len(deduped))
+    return deduped
 
 
 def recommend_best_candidate(
@@ -560,7 +585,8 @@ def recommend_best_candidate(
         if not evaluated_candidates:
             best = None
         else:
-            clustered_candidates = _cluster_candidates(evaluated_candidates)
+            deduped_candidates = _dedupe_fund_share_classes(evaluated_candidates)
+            clustered_candidates = _cluster_candidates(deduped_candidates)
             filtered_candidates = _pareto_filter_stocks(clustered_candidates)
             best = filtered_candidates[0] if filtered_candidates else None
 

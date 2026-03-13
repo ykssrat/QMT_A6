@@ -1,7 +1,7 @@
 """
 参数自动调优：基于历史回测网格搜索 Livermore 参数。
 
-目标：在给定标的池和回测区间内，对 m/c/h/k/z/y 进行网格搜索，
+目标：在给定标的池和回测区间内，对 m/c/h/k 进行网格搜索，
 输出评分最高的一组参数，帮助从历史数据中校准策略。
 """
 
@@ -20,7 +20,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from scripts.backtest.engine import prepare_backtest_context, run_backtest_from_prepared
-from scripts.processed.fetch_data import get_latest_trade_date
+from scripts.processed.fetch_data import fetch_trade_calendar, get_latest_trade_date
 from scripts.strategy.signal_generator import resolve_symbol_pool
 from scripts.utils.asset_loader import build_asset_metadata
 
@@ -38,7 +38,8 @@ def _score(metrics: dict) -> float:
     """评分函数：仅优化收益率、夏普比率、胜率三项（越大越好）。"""
     total_return = float(metrics.get("total_return", 0.0))
     sharpe = float(metrics.get("sharpe_ratio", 0.0))
-    win_rate = float(metrics.get("win_rate", 0.0))
+    raw_win_rate = metrics.get("win_rate", 0.0)
+    win_rate = float(raw_win_rate) if raw_win_rate is not None else 0.0
     return total_return + sharpe + win_rate
 
 
@@ -67,14 +68,12 @@ def _build_param_cases(
     c_grid: list[float],
     h_grid: list[float],
     k_grid: list[float],
-    z_grid: list[float],
-    y_grid: list[float],
     max_cases: int,
 ) -> list[dict]:
     """构造待评估参数组合列表。"""
     cases: list[dict] = []
-    for idx, (m, c, h, k, z_threshold, y_threshold) in enumerate(
-        itertools.product(m_grid, c_grid, h_grid, k_grid, z_grid, y_grid),
+    for idx, (m, c, h, k) in enumerate(
+        itertools.product(m_grid, c_grid, h_grid, k_grid),
         start=1,
     ):
         if max_cases > 0 and idx > max_cases:
@@ -87,8 +86,6 @@ def _build_param_cases(
                     "c": c,
                     "h": h,
                     "k": k,
-                    "z_threshold": z_threshold,
-                    "y_threshold": y_threshold,
                 },
             }
         )
@@ -171,10 +168,6 @@ def _apply_best_to_config(best_by_group: dict[str, dict]) -> None:
             "c": float(p["c"]),
             "h": float(p["h"]),
             "k": float(p["k"]),
-            "y_threshold": float(p["y_threshold"]),
-        }
-        cfg["signal"]["asset_params"]["exchange"] = {
-            "confidence_threshold": float(p["z_threshold"])
         }
 
     if fund_best:
@@ -184,14 +177,20 @@ def _apply_best_to_config(best_by_group: dict[str, dict]) -> None:
             "c": float(p["c"]),
             "h": float(p["h"]),
             "k": float(p["k"]),
-            "y_threshold": float(p["y_threshold"]),
-        }
-        cfg["signal"]["asset_params"]["fund_open"] = {
-            "confidence_threshold": float(p["z_threshold"])
         }
 
     with open(_STRATEGY_CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+
+
+def _resolve_window_start_date(base_start_date: str, end_date: str, window_days: int) -> str:
+    """计算滚动窗口起始日。"""
+    trade_dates = fetch_trade_calendar(base_start_date, end_date)
+    if not trade_dates:
+        raise ValueError(f"区间 {base_start_date} ~ {end_date} 无可用交易日")
+    if len(trade_dates) <= window_days:
+        return trade_dates[0]
+    return trade_dates[-window_days]
 
 
 def main() -> None:
@@ -203,10 +202,9 @@ def main() -> None:
     parser.add_argument("--c-grid", default="0.05,0.07,0.09")
     parser.add_argument("--h-grid", default="0.08,0.10,0.12")
     parser.add_argument("--k-grid", default="0.3,0.5,0.7")
-    parser.add_argument("--z-grid", default="1.0,1.3,1.5")
-    parser.add_argument("--y-grid", default="0.50,0.55,0.60")
     parser.add_argument("--max-cases", type=int, default=0, help="最多运行多少组参数，0 表示不限制")
     parser.add_argument("--workers", type=int, default=0, help="并发进程数，0 表示自动选择")
+    parser.add_argument("--window-days", default="30,120", help="调优窗口交易日，逗号分隔，默认 30,120")
     parser.add_argument("--apply", action="store_true", help="将最优参数写回 strategy_config.yaml")
     args = parser.parse_args()
 
@@ -240,118 +238,135 @@ def main() -> None:
     c_grid = _parse_grid(args.c_grid)
     h_grid = _parse_grid(args.h_grid)
     k_grid = _parse_grid(args.k_grid)
-    z_grid = _parse_grid(args.z_grid)
-    y_grid = _parse_grid(args.y_grid)
+    window_days_list = [int(x.strip()) for x in str(args.window_days).split(",") if x.strip()]
+    if not window_days_list:
+        raise ValueError("--window-days 不能为空")
+    for days in window_days_list:
+        if days <= 0:
+            raise ValueError("--window-days 必须为正整数")
 
     param_cases = _build_param_cases(
         m_grid=m_grid,
         c_grid=c_grid,
         h_grid=h_grid,
         k_grid=k_grid,
-        z_grid=z_grid,
-        y_grid=y_grid,
         max_cases=args.max_cases,
     )
-    best_by_group: dict[str, dict] = {}
-    for group_name, group_symbols in (("exchange", exchange_symbols), ("fund_open", fund_open_symbols)):
-        if not group_symbols:
-            print(f"跳过 {group_name} 组：无可用标的")
-            continue
+    best_by_group_by_window: dict[int, dict[str, dict]] = {}
+    for window_days in window_days_list:
+        window_start_date = _resolve_window_start_date(start_date, end_date, window_days)
+        print(f"开始调优窗口 [{window_days}日]：{window_start_date} ~ {end_date}")
 
-        total_cases = len(param_cases)
-        workers = _resolve_worker_count(args.workers, total_cases)
-        print(f"开始调优 [{group_name}]，标的数 {len(group_symbols)}，共 {total_cases} 组参数，并发进程数 {workers}...")
+        best_by_group: dict[str, dict] = {}
+        for group_name, group_symbols in (("exchange", exchange_symbols), ("fund_open", fund_open_symbols)):
+            if not group_symbols:
+                print(f"跳过 {group_name} 组：无可用标的")
+                continue
 
-        best = None
-        started_at = time.time()
-        prepared_context = prepare_backtest_context(
-            symbols=group_symbols,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        tasks = [
-            {
-                **case,
-                "capital": capital,
-                "risk_free_rate": risk_free_rate,
-                "prepared_context": prepared_context if workers == 1 else None,
-            }
-            for case in param_cases
-        ]
-
-        if workers == 1:
-            results_iter = map(_evaluate_case, tasks)
-            pool = None
-        else:
-            ctx = mp.get_context("spawn")
-            pool = ctx.Pool(
-                processes=workers,
-                initializer=_init_worker,
-                initargs=(prepared_context,),
+            total_cases = len(param_cases)
+            workers = _resolve_worker_count(args.workers, total_cases)
+            print(
+                f"开始调优 [{window_days}日][{group_name}]，标的数 {len(group_symbols)}，"
+                f"共 {total_cases} 组参数，并发进程数 {workers}..."
             )
-            chunk_size = max(1, total_cases // (workers * 4))
-            results_iter = pool.imap_unordered(_evaluate_case, tasks, chunksize=chunk_size)
 
-        try:
-            completed = 0
-            for outcome in results_iter:
-                completed += 1
-                elapsed = time.time() - started_at
-                avg_per_case = elapsed / completed
-                remaining = avg_per_case * (total_cases - completed)
-                eta_str = _format_eta(remaining)
+            best = None
+            started_at = time.time()
+            prepared_context = prepare_backtest_context(
+                symbols=group_symbols,
+                start_date=window_start_date,
+                end_date=end_date,
+            )
+            tasks = [
+                {
+                    **case,
+                    "capital": capital,
+                    "risk_free_rate": risk_free_rate,
+                    "prepared_context": prepared_context if workers == 1 else None,
+                }
+                for case in param_cases
+            ]
 
-                if outcome["error"]:
-                    print(
-                        f"[{group_name} {completed}/{total_cases}] ETA {eta_str}  失败: "
-                        f"params={outcome['params']}, error={outcome['error']}"
-                    )
-                    continue
-
-                if best is None or outcome["score"] > best["score"]:
-                    best = {
-                        "params": outcome["params"],
-                        "score": outcome["score"],
-                        "metrics": outcome["metrics"],
-                        "case_idx": outcome["case_idx"],
-                    }
-
-                metrics = outcome["metrics"]
-                print(
-                    f"[{group_name} {completed}/{total_cases}] ETA {eta_str}  score={outcome['score']:.4f} "
-                    f"ret={metrics.get('total_return', 0.0):.2%} "
-                    f"sharpe={metrics.get('sharpe_ratio', 0.0):.3f} "
-                    f"win={metrics.get('win_rate', 0.0):.2%} "
-                    f"params={outcome['params']}"
-                )
-        finally:
-            if pool is not None:
-                pool.close()
-                pool.join()
-
-        if not best:
-            raise RuntimeError(f"调优失败：{group_name} 组没有可用结果")
-
-        elapsed = time.time() - started_at
-        print(f"[{group_name}] 耗时: {elapsed:.1f} 秒")
-        print("=" * 60)
-        print(f"[{group_name}] 最优参数")
-        print(best["params"])
-        print(f"评分: {best['score']:.4f}")
-        print("对应指标:")
-        for k, v in best["metrics"].items():
-            if isinstance(v, float):
-                if "rate" in k or "return" in k or "drawdown" in k or k == "annual_vol" or k == "win_rate":
-                    print(f"  {k}: {v:.2%}")
-                else:
-                    print(f"  {k}: {v:.4f}")
+            if workers == 1:
+                results_iter = map(_evaluate_case, tasks)
+                pool = None
             else:
-                print(f"  {k}: {v}")
-        best_by_group[group_name] = best
+                ctx = mp.get_context("spawn")
+                pool = ctx.Pool(
+                    processes=workers,
+                    initializer=_init_worker,
+                    initargs=(prepared_context,),
+                )
+                chunk_size = max(1, total_cases // (workers * 4))
+                results_iter = pool.imap_unordered(_evaluate_case, tasks, chunksize=chunk_size)
+
+            try:
+                completed = 0
+                for outcome in results_iter:
+                    completed += 1
+                    elapsed = time.time() - started_at
+                    avg_per_case = elapsed / completed
+                    remaining = avg_per_case * (total_cases - completed)
+                    eta_str = _format_eta(remaining)
+
+                    if outcome["error"]:
+                        print(
+                            f"[{window_days}日 {group_name} {completed}/{total_cases}] ETA {eta_str}  失败: "
+                            f"params={outcome['params']}, error={outcome['error']}"
+                        )
+                        continue
+
+                    if best is None or outcome["score"] > best["score"]:
+                        best = {
+                            "params": outcome["params"],
+                            "score": outcome["score"],
+                            "metrics": outcome["metrics"],
+                            "case_idx": outcome["case_idx"],
+                        }
+
+                    metrics = outcome["metrics"]
+                    raw_win_rate = metrics.get("win_rate", 0.0)
+                    win_rate = float(raw_win_rate) if raw_win_rate is not None else 0.0
+                    print(
+                        f"[{window_days}日 {group_name} {completed}/{total_cases}] ETA {eta_str} "
+                        f"score={outcome['score']:.4f} "
+                        f"ret={metrics.get('total_return', 0.0):.2%} "
+                        f"sharpe={metrics.get('sharpe_ratio', 0.0):.3f} "
+                        f"win={win_rate:.2%} "
+                        f"params={outcome['params']}"
+                    )
+            finally:
+                if pool is not None:
+                    pool.close()
+                    pool.join()
+
+            if not best:
+                raise RuntimeError(f"调优失败：{window_days}日 {group_name} 组没有可用结果")
+
+            elapsed = time.time() - started_at
+            print(f"[{window_days}日][{group_name}] 耗时: {elapsed:.1f} 秒")
+            print("=" * 60)
+            print(f"[{window_days}日][{group_name}] 最优参数")
+            print(best["params"])
+            print(f"评分: {best['score']:.4f}")
+            print("对应指标:")
+            for k, v in best["metrics"].items():
+                if isinstance(v, float):
+                    if "rate" in k or "return" in k or "drawdown" in k or k == "annual_vol" or k == "win_rate":
+                        print(f"  {k}: {v:.2%}")
+                    else:
+                        print(f"  {k}: {v:.4f}")
+                else:
+                    print(f"  {k}: {v}")
+            best_by_group[group_name] = best
+
+        best_by_group_by_window[window_days] = best_by_group
 
     if args.apply:
-        _apply_best_to_config(best_by_group)
-        print("分组最优参数已写回 configs/strategy_config.yaml")
+        # 写回策略参数时优先使用 120 日窗口；若无则退回首个窗口
+        apply_window = 120 if 120 in best_by_group_by_window else window_days_list[0]
+        _apply_best_to_config(best_by_group_by_window.get(apply_window, {}))
+        print(f"分组最优参数已写回 configs/strategy_config.yaml（窗口={apply_window}日）")
 
 
 if __name__ == "__main__":

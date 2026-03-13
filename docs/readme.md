@@ -64,8 +64,8 @@ flowchart LR
 **配置补充（当前实现）**：
 - `capital.current_positions`：真实持仓明细（成本价、份额、峰值、资产类型）
 - `capital.watchlist_metadata`：自选标的元信息（名称、资产类型），用于识别股票 / ETF / 场外基金
-- `livermore.asset_params.exchange` / `livermore.asset_params.fund_open`：场内与场外两套独立参数（m/c/h/k/y）
-- `signal.asset_params.exchange` / `signal.asset_params.fund_open`：场内与场外两套 Z 阈值
+- `livermore.asset_params.exchange` / `livermore.asset_params.fund_open`：场内与场外两套独立参数（m/c/h/k）
+- `signal`：扫描与候选池参数（不再配置手工 Z 阈值）
 - `signal.scan_etf_top_n` / `signal.scan_stock_top_n` / `signal.scan_fund_top_n` / `signal.scan_eval_days`：离线候选池择优参数
 - `signal.recommend_exclude_symbols`：独立荐股排除代码列表（如不希望重复推荐某些代码）
 
@@ -102,10 +102,10 @@ flowchart LR
 | *c* | 止损 / 回调阈值 | `livermore.asset_params.<asset_type>.c` |
 | *h* | 加仓解锁盈利阈值 | `livermore.asset_params.<asset_type>.h` |
 | *k* | 加仓系数，$a = k \times r$ | `livermore.asset_params.<asset_type>.k` |
-| *y* | Y 因子阈值（是否触发转仓卖出） | `livermore.asset_params.<asset_type>.y_threshold` |
-| *Z* | 信心因子（多因子合成） | `signal.asset_params.<asset_type>.confidence_threshold` |
+| *Z* | 入场动态阈值（由全市场 `confidence_z` 分位数生成） | 动态计算 |
+| *Y* | 转仓强度因子（由全市场 `confidence_z` 聚合生成） | 动态计算 |
 
-说明：场内场外使用不同的参数配置。`<asset_type>` 当前包含 `exchange`（股票/ETF/LOF）与 `fund_open`（场外基金）；兼容旧键 `livermore.m/c/h/k/y_threshold` 与 `signal.confidence_threshold` 作为场内回退值。
+说明：场内场外使用不同的参数配置。`<asset_type>` 当前包含 `exchange`（股票/ETF/LOF）与 `fund_open`（场外基金）。当前版本将调优重点收敛为 `m/c/h/k`，`Z/Y` 不再手工配置阈值，而由市场状态动态生成。
 
 **决策流程**：
 
@@ -123,9 +123,10 @@ flowchart TD
 ```
 
 **资金不足时（Y 因子）**：
-- 先由全市场信号（confidence_z）合成 Y 因子
-- 当 $Y \ge y\_threshold$：卖出当前最差持仓 1 只进行转仓
-- 当 $Y < y\_threshold$：不强制卖出补齐，仅使用当前现金（有多少用多少）
+- 先由全市场信号（`confidence_z`）合成市场强度 $Y$
+- 同时按市场强弱动态生成转仓触发线 `y_trigger`
+- 当 $Y \ge y\_trigger$：卖出当前最差持仓 1 只进行转仓
+- 当 $Y < y\_trigger$：不强制卖出补齐，仅使用当前现金（有多少用多少）
 
 **同日卖出信号去重（当前实现）**：止损优先于 Y 因子卖出；若某标的当日已触发止损，不会再重复生成 Y 因子卖出信号。
 
@@ -141,7 +142,9 @@ flowchart TD
 | 胜率 | 回测期间盈利平仓笔数 / 总平仓笔数，$W = N_{win} / N_{total}$ |
 
 **参数优化目标（当前实现）**：
-- 自动调优按资产类型分组独立执行（`exchange` 与 `fund_open` 各跑一套 m/c/h/k/z/y）
+- 自动调优按资产类型分组独立执行（`exchange` 与 `fund_open` 各跑一套 m/c/h/k）
+- 调优窗口固定为短周期：默认 `30,120` 交易日
+- `--apply` 写回参数时优先使用 `120` 日窗口结果
 - 每组只优化三项目标：收益率、夏普比率、胜率
 - 评分函数：$score = total\_return + sharpe\_ratio + win\_rate$
 
@@ -153,7 +156,12 @@ flowchart TD
 | 趋势 | MACD(DIF/DEA/柱)、布林带(20,2σ) |
 | 动量 | ROC、N 日收益率(5/10/20) |
 | 量价 | 成交量均线、量比 |
-| 综合 | 信心因子 Z（上述因子滚动标准化等权合成） |
+| 综合 | 信心因子 Z（候选组件滚动标准化后合成） |
+
+**指标质量控制（当前实现）**：
+- 在合成 `confidence_z` 前，对候选组件做三维评估：预测性、稳定性、覆盖率
+- 若某组件在三维上被其他组件彻底帕累托支配，则剔除
+- 目标：避免低质量指标把噪声注入决策链
 
 # 开发规范
 
@@ -174,7 +182,8 @@ flowchart TD
 
 # 快速运行
 
-以下命令均在项目根目录执行（Windows PowerShell）：
+以下命令均在项目根目录执行（Windows PowerShell）。
+当前保留最小必需命令集合：`1`、`2`、`2.1`、荐股场内、荐股场外、历史回测报告非静默、双组全量参数调优并写回。
 
 ```powershell
 # 1) 安装依赖（首次）
@@ -187,40 +196,27 @@ flowchart TD
 .\.venv\Scripts\python.exe scripts\strategy\build_candidate_pool.py
 
 # 2.2) 独立荐股（始终设置超时，避免网络阻塞）
-.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 90
 
-# 2.2.1) 独立荐股（排除指定代码，例如排除 022364）
-.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --exclude-symbols 022364
+# 2.2.1) 独立荐股（仅场内候选）
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 90 --fund-top-n 0
 
-# 2.2.2) 独立荐股（仅场内候选：不参与场外基金）
-.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --fund-top-n 0
+# 2.2.2) 独立荐股（仅场外候选）
+.\.venv\Scripts\python.exe scripts\strategy\recommend_one.py --timeout 90 --etf-top-n 0 --stock-top-n 0
 
-# 3) 运行历史回测并输出绩效报告
-.\.venv\Scripts\python.exe scripts\backtest\run_backtest_report.py
+# 3) 历史回测报告（非静默进度版，固定最近120交易日）
+.\.venv\Scripts\python.exe scripts\backtest\run_backtest_report.py --show-progress --show-meta --trial-days 120
 
-# 3.1) 非静默进度版，只滚动120交易日
-.\.venv\Scripts\python.exe scripts\backtest\run_backtest_report.py --show-progress --show-meta --trials-per-symbol 10 --trial-days 120
-# 4) 运行单元测试
-.\.venv\Scripts\python.exe -m pytest tests\unit -q
+# 4) 双组全量参数调优并写回（默认窗口 30,120）
+.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --window-days 30,120 --apply
 
-# 5) 参数自动调优（建议先小样本 + 单进程，避免长时间占用）
-.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --max-cases 50 --workers 1
-
-# 5.1) 参数自动调优（双组全量网格，耗时较长）
-.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py
-
-# 6) 参数自动调优并写回配置
-.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --apply
-
-# 7) 参数自动调优并限量且写回配置（推荐）
-.\.venv\Scripts\python.exe scripts\backtest\auto_tune_params.py --max-cases 120 --workers 1 --apply
 ```
 
 运行结果说明：
-- 独立荐股输出：`recommend_one.py` 优先从离线候选池读取候选，经过聚类去重与帕累托过滤后仅输出 1 个推荐代码（若无候选则输出 `NONE`）；建议始终传 `--timeout`。仅当有有效推荐代码时才会追加到 `datas/recommend/荐股.txt`
+- 独立荐股输出：`recommend_one.py` 优先从离线候选池读取候选，经过聚类去重、基金同类去重（同前5位代码）与帕累托过滤后仅输出 1 个推荐代码（若无候选则输出 `NONE`）；建议始终传 `--timeout`。仅当有有效推荐代码时才会追加到 `datas/recommend/荐股.txt`，格式为按天聚合（如 `2026-03-13：022364、022365`）。独立荐股会自动排除“当日已推荐过”的代码（场内/场外统一生效）
 - 建议输出：`signal_generator.py` 输出持仓交易建议
-- 回测输出：结束日自动取最近交易日；除组合总指标外，还会输出每个代码的单标的收益率/夏普，以及按组合成交记录统计的分代码胜率（赢/平仓）与已实现盈亏
-- 调优输出：默认会分别对 `exchange` 与 `fund_open` 两组跑完整网格；可用 `--max-cases` 限制每组运行组数、`--workers` 控制并发（Windows 建议先用 `--workers 1`）；`--apply` 会分组写回配置
+- 回测输出：结束日自动取最近交易日；历史回测固定在最近 120 个交易日（脚本内硬限制，命令中也建议显式传 `--trial-days 120`）；除组合总指标外，还会输出每个代码的单标的收益率/夏普，以及按组合成交记录统计的分代码胜率（赢/平仓）与已实现盈亏
+- 调优输出：默认会分别对 `exchange` 与 `fund_open` 两组在 `30/120` 交易日窗口进行网格搜索；可用 `--max-cases` 限制每组运行组数、`--workers` 控制并发（Windows 建议先用 `--workers 1`）；`--apply` 优先写回 120 日窗口的分组最优 `m/c/h/k`
 
 # 合规要点
 

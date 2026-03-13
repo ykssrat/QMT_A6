@@ -10,6 +10,7 @@ import argparse
 import logging
 import multiprocessing as mp
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -20,7 +21,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from scripts.strategy.signal_generator import resolve_symbol_pool
-from scripts.utils.market_scanner import recommend_best_candidate
+from scripts.utils.market_scanner import load_candidate_pool_file, recommend_best_candidate
 
 logging.basicConfig(level=logging.ERROR, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -67,11 +68,73 @@ def _recommend_worker(
 
 
 def _append_recommend_record(symbol: str) -> None:
-    """将有效荐股结果追加写入 datas/recommend/荐股.txt。"""
+    """将有效荐股结果按天聚合写入 datas/recommend/荐股.txt。"""
     os.makedirs(_RECOMMEND_DIR, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(_RECOMMEND_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{ts}\t{symbol}\n")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    by_day: dict[str, list[str]] = {}
+    if os.path.exists(_RECOMMEND_FILE):
+        with open(_RECOMMEND_FILE, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                date_key = ""
+                codes: list[str] = []
+
+                # 新格式：2026-03-13：022364、022365
+                if "：" in line:
+                    left, right = line.split("：", 1)
+                    left = left.strip()
+                    if re.match(r"^\d{4}-\d{2}-\d{2}$", left):
+                        date_key = left
+                        codes = [x.strip() for x in re.split(r"[、,，]", right) if x.strip()]
+                # 兼容旧格式：2026-03-13 12:41:15\t022364
+                elif "\t" in line:
+                    ts, code = line.split("\t", 1)
+                    date_key = ts.strip()[:10]
+                    code = code.strip()
+                    if code:
+                        codes = [code]
+
+                if not date_key:
+                    continue
+                bucket = by_day.setdefault(date_key, [])
+                for code in codes:
+                    if code not in bucket:
+                        bucket.append(code)
+
+    day_codes = by_day.setdefault(today, [])
+    if symbol not in day_codes:
+        day_codes.append(symbol)
+
+    with open(_RECOMMEND_FILE, "w", encoding="utf-8") as f:
+        for date_key in sorted(by_day.keys()):
+            codes_text = "、".join(by_day[date_key])
+            f.write(f"{date_key}：{codes_text}\n")
+
+
+def _expand_exclude_symbols(exclude_symbols: set[str]) -> set[str]:
+    """扩展排除列表：若排除场外基金某代码，同时排除同前5位代码（A/C类）。"""
+    pool = load_candidate_pool_file()
+    if not pool or not exclude_symbols:
+        return exclude_symbols
+
+    fund_groups: dict[str, set[str]] = {}
+    for item in pool:
+        symbol = str(item.get("symbol", "")).strip()
+        if not symbol.isdigit() or len(symbol) != 6:
+            continue
+        if str(item.get("asset_type", "")) != "fund_open":
+            continue
+        fund_groups.setdefault(symbol[:5], set()).add(symbol)
+
+    expanded = set(exclude_symbols)
+    for symbol in list(exclude_symbols):
+        if symbol.isdigit() and len(symbol) == 6 and symbol[:5] in fund_groups:
+            expanded.update(fund_groups[symbol[:5]])
+    return expanded
 
 
 def main() -> None:
@@ -93,38 +156,26 @@ def main() -> None:
     signal_cfg = cfg.get("signal", {})
 
     lv_asset_params = (lv_cfg.get("asset_params") or {})
-    signal_asset_params = (signal_cfg.get("asset_params") or {})
     exchange_lv = (lv_asset_params.get("exchange") or {})
     fund_lv = (lv_asset_params.get("fund_open") or {})
-    exchange_signal = (signal_asset_params.get("exchange") or {})
-    fund_signal = (signal_asset_params.get("fund_open") or {})
-
-    exchange_z = float(exchange_signal.get("confidence_threshold", signal_cfg.get("confidence_threshold", 1.5)))
-    fund_z = float(fund_signal.get("confidence_threshold", exchange_z))
 
     strategy_params = {
         "m": float(exchange_lv.get("m", lv_cfg.get("m", 0.1))),
         "c": float(exchange_lv.get("c", lv_cfg.get("c", 0.07))),
         "h": float(exchange_lv.get("h", lv_cfg.get("h", 0.10))),
         "k": float(exchange_lv.get("k", lv_cfg.get("k", 0.5))),
-        "z_threshold": exchange_z,
-        "y_threshold": float(exchange_lv.get("y_threshold", lv_cfg.get("y_threshold", 0.55))),
         "asset_params": {
             "exchange": {
                 "m": float(exchange_lv.get("m", lv_cfg.get("m", 0.1))),
                 "c": float(exchange_lv.get("c", lv_cfg.get("c", 0.07))),
                 "h": float(exchange_lv.get("h", lv_cfg.get("h", 0.10))),
                 "k": float(exchange_lv.get("k", lv_cfg.get("k", 0.5))),
-                "y_threshold": float(exchange_lv.get("y_threshold", lv_cfg.get("y_threshold", 0.55))),
-                "z_threshold": exchange_z,
             },
             "fund_open": {
                 "m": float(fund_lv.get("m", exchange_lv.get("m", lv_cfg.get("m", 0.1)))),
                 "c": float(fund_lv.get("c", exchange_lv.get("c", lv_cfg.get("c", 0.07)))),
                 "h": float(fund_lv.get("h", exchange_lv.get("h", lv_cfg.get("h", 0.10)))),
                 "k": float(fund_lv.get("k", exchange_lv.get("k", lv_cfg.get("k", 0.5)))),
-                "y_threshold": float(fund_lv.get("y_threshold", exchange_lv.get("y_threshold", lv_cfg.get("y_threshold", 0.55)))),
-                "z_threshold": fund_z,
             },
         },
     }
@@ -135,11 +186,12 @@ def main() -> None:
         exclude_symbols.update(str(x).strip() for x in config_excludes if str(x).strip())
     arg_excludes = [x.strip() for x in str(args.exclude_symbols or "").split(",") if x.strip()]
     exclude_symbols.update(arg_excludes)
-    etf_top_n = args.etf_top_n or int(signal_cfg.get("scan_etf_top_n", 8))
-    stock_top_n = args.stock_top_n or int(signal_cfg.get("scan_stock_top_n", 8))
-    fund_top_n = args.fund_top_n or int(signal_cfg.get("scan_fund_top_n", etf_top_n))
-    eval_days = args.eval_days or int(signal_cfg.get("scan_eval_days", 365))
+    etf_top_n = args.etf_top_n if args.etf_top_n is not None else int(signal_cfg.get("scan_etf_top_n", 8))
+    stock_top_n = args.stock_top_n if args.stock_top_n is not None else int(signal_cfg.get("scan_stock_top_n", 8))
+    fund_top_n = args.fund_top_n if args.fund_top_n is not None else int(signal_cfg.get("scan_fund_top_n", etf_top_n))
+    eval_days = args.eval_days if args.eval_days is not None else int(signal_cfg.get("scan_eval_days", 365))
     risk_free_rate = float(cfg.get("evaluation", {}).get("risk_free_rate", 0.02))
+    exclude_symbols = _expand_exclude_symbols(exclude_symbols)
 
     best: dict | None = None
     timeout_seconds = max(1, int(args.timeout))

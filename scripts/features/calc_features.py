@@ -11,6 +11,73 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _safe_abs_corr(a: pd.Series, b: pd.Series) -> float:
+    """计算绝对相关系数，异常时返回 0。"""
+    pair = pd.concat([a, b], axis=1).dropna()
+    if len(pair) < 20:
+        return 0.0
+    corr = pair.iloc[:, 0].corr(pair.iloc[:, 1])
+    if pd.isna(corr):
+        return 0.0
+    return float(abs(corr))
+
+
+def _select_components_by_pareto(df: pd.DataFrame, candidates: list[str]) -> list[str]:
+    """
+    对候选指标做质量评估，并剔除被彻底帕累托支配的指标。
+
+    质量维度（越大越好）：
+        1) predictiveness: 与未来 1 日收益绝对相关
+        2) stability: 稳定性（1 / (1 + 波动率)）
+        3) coverage: 有效值覆盖率
+    """
+    if not candidates:
+        return []
+
+    forward_ret = df["close"].pct_change().shift(-1)
+    quality: dict[str, tuple[float, float, float]] = {}
+    for col in candidates:
+        if col not in df.columns:
+            continue
+        s = df[col]
+        predictiveness = _safe_abs_corr(s, forward_ret)
+        vol = s.diff().std(skipna=True)
+        if pd.isna(vol):
+            vol = 0.0
+        stability = float(1.0 / (1.0 + float(vol)))
+        coverage = float(s.notna().mean())
+        quality[col] = (predictiveness, stability, coverage)
+
+    if not quality:
+        return candidates
+
+    non_dominated: list[str] = []
+    names = list(quality.keys())
+    for name in names:
+        target = quality[name]
+        dominated = False
+        for other in names:
+            if other == name:
+                continue
+            probe = quality[other]
+            if (
+                probe[0] >= target[0]
+                and probe[1] >= target[1]
+                and probe[2] >= target[2]
+                and (
+                    probe[0] > target[0]
+                    or probe[1] > target[1]
+                    or probe[2] > target[2]
+                )
+            ):
+                dominated = True
+                break
+        if not dominated:
+            non_dominated.append(name)
+
+    return non_dominated or candidates
+
+
 # ────────────────────────── 均线类 ──────────────────────────
 
 def add_ma(df: pd.DataFrame, windows: list[int] = [5, 10, 20, 60]) -> pd.DataFrame:
@@ -160,6 +227,10 @@ def calc_confidence_z(df: pd.DataFrame) -> pd.DataFrame:
         - MACD 柱 macd_bar（标准化）
         - 量比 vol_ratio（标准化）
 
+    为避免低质量指标污染信号，会先做指标质量评估：
+        - 若某指标在预测性、稳定性、覆盖率三维上被其他指标彻底帕累托支配
+        - 则该指标会被剔除，不参与当期 confidence_z 合成
+
     列名：confidence_z
 
     注意：本函数依赖 add_momentum / add_macd / add_volume_ratio 已被调用。
@@ -170,8 +241,12 @@ def calc_confidence_z(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"缺少前置因子列：{missing}，请先调用对应 add_* 函数")
 
     df = df.copy()
+    selected = _select_components_by_pareto(df, required)
+    if not selected:
+        selected = required
+
     components = []
-    for col in required:
+    for col in selected:
         s = df[col]
         std = s.rolling(window=60, min_periods=10).std()
         mean = s.rolling(window=60, min_periods=10).mean()

@@ -3,6 +3,7 @@
 
 默认行为：
 - 每个代码独立运行多次实验（默认 100 次）
+- 仅使用最近 120 个交易日做滚动回测
 - 按收益率 + 夏普 + 胜率的综合得分排序
 - 仅输出分代码表，不输出组合总指标
 """
@@ -29,6 +30,7 @@ logging.basicConfig(level=logging.ERROR, format="%(asctime)s [%(levelname)s] %(m
 
 _DATA_CONFIG_PATH = os.path.join(ROOT_DIR, "configs", "data_config.yaml")
 _STRATEGY_CONFIG_PATH = os.path.join(ROOT_DIR, "configs", "strategy_config.yaml")
+_MAX_BACKTEST_TRADE_DAYS = 120
 
 
 def _load_yaml(path: str) -> dict:
@@ -205,7 +207,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="分代码独立回测报告")
     parser.add_argument("--trials-per-symbol", type=int, default=100, help="每个代码独立实验次数")
-    parser.add_argument("--trial-days", type=int, default=252, help="单次独立实验窗口长度（交易日）")
+    parser.add_argument("--trial-days", type=int, default=120, help="单次独立实验窗口长度（交易日，固定不超过120）")
     parser.add_argument("--seed", type=int, default=42, help="随机种子，保证实验可复现")
     parser.add_argument("--show-meta", action="store_true", help="显示回测区间、标的池和参数信息")
     parser.add_argument("--show-progress", action="store_true", help="显示代码级运行进度")
@@ -215,6 +217,8 @@ def main() -> None:
         raise ValueError("--trials-per-symbol 必须大于 0")
     if args.trial_days < 60:
         raise ValueError("--trial-days 建议不小于 60（因子计算需要足够窗口）")
+    if args.trial_days > _MAX_BACKTEST_TRADE_DAYS:
+        args.trial_days = _MAX_BACKTEST_TRADE_DAYS
 
     data_cfg = _load_yaml(_DATA_CONFIG_PATH)
     strategy_cfg = _load_yaml(_STRATEGY_CONFIG_PATH)
@@ -235,6 +239,12 @@ def main() -> None:
     trade_dates = fetch_trade_calendar(start_date, end_date)
     if not trade_dates:
         raise ValueError(f"区间 {start_date} ~ {end_date} 无可用交易日")
+    if len(trade_dates) > _MAX_BACKTEST_TRADE_DAYS:
+        trade_dates = trade_dates[-_MAX_BACKTEST_TRADE_DAYS:]
+
+    # 历史回测固定在最近 120 个交易日
+    start_date = trade_dates[0]
+    end_date = trade_dates[-1]
 
     asset_meta = build_asset_metadata()
     rng = random.Random(args.seed)
